@@ -1520,6 +1520,7 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		kubecontrollermanagerconfigv1alpha1.GarbageCollectorControllerConfiguration{}.OpenAPIModelName():                schema_k8sio_kube_controller_manager_config_v1alpha1_GarbageCollectorControllerConfiguration(ref),
 		kubecontrollermanagerconfigv1alpha1.GroupResource{}.OpenAPIModelName():                                          schema_k8sio_kube_controller_manager_config_v1alpha1_GroupResource(ref),
 		kubecontrollermanagerconfigv1alpha1.HPAControllerConfiguration{}.OpenAPIModelName():                             schema_k8sio_kube_controller_manager_config_v1alpha1_HPAControllerConfiguration(ref),
+		kubecontrollermanagerconfigv1alpha1.ImperativeEvictionResponderControllerConfiguration{}.OpenAPIModelName():     schema_k8sio_kube_controller_manager_config_v1alpha1_ImperativeEvictionResponderControllerConfiguration(ref),
 		kubecontrollermanagerconfigv1alpha1.JobControllerConfiguration{}.OpenAPIModelName():                             schema_k8sio_kube_controller_manager_config_v1alpha1_JobControllerConfiguration(ref),
 		kubecontrollermanagerconfigv1alpha1.KubeControllerManagerConfiguration{}.OpenAPIModelName():                     schema_k8sio_kube_controller_manager_config_v1alpha1_KubeControllerManagerConfiguration(ref),
 		kubecontrollermanagerconfigv1alpha1.LegacySATokenCleanerConfiguration{}.OpenAPIModelName():                      schema_k8sio_kube_controller_manager_config_v1alpha1_LegacySATokenCleanerConfiguration(ref),
@@ -72214,6 +72215,28 @@ func schema_k8sio_kube_controller_manager_config_v1alpha1_HPAControllerConfigura
 	}
 }
 
+func schema_k8sio_kube_controller_manager_config_v1alpha1_ImperativeEvictionResponderControllerConfiguration(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "ImperativeEvictionResponderControllerConfiguration contains elements configuring the imperative eviction responder controller.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"ConcurrentImperativeEvictionResponderSyncs": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ConcurrentImperativeEvictionResponderSyncs is the number of eviction object syncing and imperative eviction operations that will be done concurrently. Larger number = bigger throughput of imperative eviction calls (pods/<name>/eviction subresource) and faster Eviction status updating, but more CPU (and network) load.",
+							Default:     0,
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+				},
+				Required: []string{"ConcurrentImperativeEvictionResponderSyncs"},
+			},
+		},
+	}
+}
+
 func schema_k8sio_kube_controller_manager_config_v1alpha1_JobControllerConfiguration(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
@@ -72367,6 +72390,13 @@ func schema_k8sio_kube_controller_manager_config_v1alpha1_KubeControllerManagerC
 							Description: "HPAControllerConfiguration holds configuration for HPAController related features.",
 							Default:     map[string]interface{}{},
 							Ref:         ref(kubecontrollermanagerconfigv1alpha1.HPAControllerConfiguration{}.OpenAPIModelName()),
+						},
+					},
+					"ImperativeEvictionResponderController": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ImperativeEvictionResponderControllerConfiguration holds configuration for ImperativeEvictionResponderController related features.",
+							Default:     map[string]interface{}{},
+							Ref:         ref(kubecontrollermanagerconfigv1alpha1.ImperativeEvictionResponderControllerConfiguration{}.OpenAPIModelName()),
 						},
 					},
 					"JobController": {
