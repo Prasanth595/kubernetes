@@ -1,9 +1,11 @@
 package topologymanager
 
 import (
+	"math/rand"
 	"testing"
 
 	"k8s.io/klog/v2"
+	"k8s.io/kubernetes/pkg/kubelet/cm/topologymanager/bitmask"
 )
 
 func TestHintMergerMergePreferredFound(t *testing.T) {
@@ -177,5 +179,47 @@ func TestHintMergerMergePreferredAggregatesScore(t *testing.T) {
 	}
 	if best.Score != 60 {
 		t.Fatalf("expected score 60, got %d", best.Score)
+	}
+}
+
+func TestHintMergerMergePreferredEquivalentToMerge(t *testing.T) {
+	numaInfo := commonNUMAInfoEightNodes()
+	r := rand.New(rand.NewSource(1))
+
+	for n := 0; n < 500; n++ {
+		dim := r.Intn(5) + 1
+		hints := make([][]TopologyHint, 0, dim)
+		for i := 0; i < dim; i++ {
+			numHints := r.Intn(6) + 1
+			oneDim := make([]TopologyHint, 0, numHints)
+			for j := 0; j < numHints; j++ {
+				var affinity bitmask.BitMask
+				if r.Intn(3) != 0 {
+					var bits []int
+					for k := 0; k < 8; k++ {
+						if r.Intn(4) == 0 {
+							bits = append(bits, k)
+						}
+					}
+					affinity = NewTestBitMask(bits...)
+				}
+				oneDim = append(oneDim, TopologyHint{
+					NUMANodeAffinity: affinity,
+					Preferred:        r.Intn(2) == 0,
+					Score:            int64(r.Intn(101)),
+				})
+			}
+			hints = append(hints, oneDim)
+		}
+
+		merger := NewHintMerger(numaInfo, hints, PolicyBestEffort, PolicyOptions{})
+		preferred := merger.mergePreferred(klog.Background())
+		if preferred == nil {
+			continue
+		}
+		best := merger.Merge(klog.Background())
+		if !preferred.IsEqual(best) || preferred.Score != best.Score {
+			t.Fatalf("expected mergePreferred() == Merge(); got preferred=%v full=%v hints=%v", *preferred, best, hints)
+		}
 	}
 }
