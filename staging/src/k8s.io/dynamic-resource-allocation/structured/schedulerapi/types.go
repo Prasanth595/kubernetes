@@ -125,6 +125,9 @@ func (s ConsumedCapacity) Clone() ConsumedCapacity {
 // and creates a new entry if no capacity created yet.
 func (s ConsumedCapacity) Add(addedCapacity ConsumedCapacity) {
 	for name, quantity := range addedCapacity {
+		if quantity.Sign() < 0 {
+			continue // defense-in-depth: a validated ConsumedCapacity should never be negative
+		}
 		val := *quantity
 		if _, found := s[name]; found {
 			s[name].Add(val)
