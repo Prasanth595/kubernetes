@@ -976,7 +976,7 @@ var _ = SIGDescribe("CPU Manager", ginkgo.Ordered, ginkgo.ContinueOnFailure, fra
 			pod, err = e2epod.NewPodClient(f).Get(ctx, pod.Name, metav1.GetOptions{})
 			framework.ExpectNoError(err)
 			gomega.Expect(pod).To(BeAPodInPhase(v1.PodFailed))
-			gomega.Expect(pod).To(HaveStatusReasonMatchingRegex(`SMT.*Alignment.*Error`))
+			gomega.Expect(pod).To(HaveStatusReasonMatchingRegex(`Infeasible`))
 		})
 
 		ginkgo.It("should admit workload asking SMT-multiple of cpus", func(ctx context.Context) {
@@ -1251,7 +1251,7 @@ var _ = SIGDescribe("CPU Manager", ginkgo.Ordered, ginkgo.ContinueOnFailure, fra
 				pod, err = e2epod.NewPodClient(f).Get(ctx, pod.Name, metav1.GetOptions{})
 				framework.ExpectNoError(err)
 				gomega.Expect(pod).To(BeAPodInPhase(v1.PodFailed))
-				gomega.Expect(pod).To(HaveStatusReasonMatchingRegex(`SMT.*Alignment.*Error`))
+				gomega.Expect(pod).To(HaveStatusReasonMatchingRegex(`Infeasible`))
 			})
 
 			ginkgo.It("should admit workload asking SMT-multiple of cpus", func(ctx context.Context) {
