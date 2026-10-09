@@ -66,7 +66,8 @@ import (
 // limited to three decimal places: "18446744073709551616" keeps its value, and
 // "1.2345" keeps its precision (String reports it as "1234500u"). Parsing does
 // cap a binarySI quantity, silently, at 2^63-1: "8Ei" parses as 2^63-1.
-// Parsing also preserves a value only down to nano, rounding a finer non-zero
+// Parsing keeps at most 29 significant digits, rounding the rest away from
+// zero, and preserves a value only down to nano, rounding a finer non-zero
 // value away from zero, so "0.9n" becomes "1n". The int64 accessors round and
 // may overflow on top of that: see Value, MilliValue and ScaledValue.
 //
@@ -433,9 +434,13 @@ func ParseQuantity(str string) (Quantity, error) {
 		}
 	}
 
-	amount := new(inf.Dec)
-	if _, ok := amount.SetString(value); !ok {
-		return Quantity{}, ErrNumeric
+	maxDigits := maxMantissaDigits
+	if base == 2 {
+		maxDigits = maxBinaryMantissaDigits
+	}
+	amount, err := parseMantissa(value, positive, num, denom, maxDigits)
+	if err != nil {
+		return Quantity{}, err
 	}
 
 	// So that no one but us has to think about suffixes, remove it.
@@ -445,16 +450,19 @@ func ParseQuantity(str string) (Quantity, error) {
 			// rounding it to 1n.
 			return Quantity{}, ErrSuffix
 		}
-		// The exponent has not been applied to amount yet, so
-		// amountScale is <= 0 (e.g. -1 for "1.5").
+		// The exponent has not been applied to amount yet, so amountScale is
+		// <= 0 (e.g. -1 for "1.5") unless parseMantissa rounded the mantissa.
 		amountScale := widenInfScale(amount.Scale())
+		if amountScale+widenScale(Scale(exponent)) > math.MaxInt32 {
+			return Quantity{}, ErrNumeric
+		}
 		effectiveScale, fits := narrowScale(amountScale + widenScale(Scale(exponent)))
 		effectiveInfScale, canInfScale := effectiveScale.infScale()
 		if !fits || !canInfScale {
-			// Since amountScale <= 0, both conditions here indicate that
-			// effectiveScale is below the range of inf.Scale. So we Round to
-			// Nano, offsetting by exponent since exponent has not been applied
-			// to amount yet.
+			// Scales above math.MaxInt32 were rejected above, so both conditions
+			// here indicate that effectiveScale is below the range of inf.Scale.
+			// So we Round to Nano, offsetting by exponent since exponent has not
+			// been applied to amount yet.
 			rounded, _ := infDecAmount{amount}.AsScale(Nano - Scale(exponent))
 			amount = rounded.Dec
 			effectiveInfScale = nanoInfScale
@@ -501,6 +509,58 @@ func ParseQuantity(str string) (Quantity, error) {
 	q := Quantity{d: infDecAmount{amount}, Format: format}
 	q.CacheString()
 	return q, nil
+}
+
+// maxMantissaDigits is how many significant digits ParseQuantity keeps in a
+// decimal mantissa. 29 digits hold any int64 value at nano precision.
+// This matches the precision supported by Add and Sub.
+const maxMantissaDigits = 29
+
+// maxBinaryMantissaDigits is how many significant digits ParseQuantity keeps in
+// a binarySI mantissa. The mantissa is rounded before it is multiplied by the
+// suffix, and with Ei (2^60) a whole number of nanos up to 2^63-1 can require
+// 88 (19 + 9 + 60) digits.
+const maxBinaryMantissaDigits = 88
+
+// parseMantissa parses the number in front of a quantity's suffix, keeping at
+// most maxDigits significant digits.
+//
+// Extra digits are rounded away from zero, the way ParseQuantity rounds values
+// below 1n, and the scale absorbs them so the value keeps its size: with
+// maxDigits 3, "123456" parses as 124e3.
+func parseMantissa(value string, positive bool, num, denom string, maxDigits int) (*inf.Dec, error) {
+	amount := new(inf.Dec)
+	digits := strings.TrimLeft(num+denom, "0")
+	if len(digits) <= maxDigits {
+		if _, ok := amount.SetString(value); !ok {
+			return nil, ErrNumeric
+		}
+		return amount, nil
+	}
+
+	kept, dropped := digits[:maxDigits], digits[maxDigits:]
+	amount.SetString(kept)
+	// The value is kept * 10^(len(dropped) - len(denom)).
+	wideScale := widenedScale(len(dropped) - len(denom))
+	if strings.Trim(dropped, "0") != "" {
+		amount.Add(amount, decOne)
+		// Rounding up all nines carries into another digit.
+		if strings.Trim(kept, "9") == "" {
+			ub := amount.UnscaledBig()
+			amount.SetUnscaledBig(ub.Quo(ub, bigTen))
+			wideScale++
+		}
+	}
+	if !positive {
+		amount.Neg(amount)
+	}
+	scale, fits := narrowScale(wideScale)
+	infScale, canInfScale := scale.infScale()
+	if !fits || !canInfScale {
+		return nil, ErrNumeric
+	}
+	amount.SetScale(infScale)
+	return amount, nil
 }
 
 // DeepCopy returns a deep-copy of the Quantity value.
