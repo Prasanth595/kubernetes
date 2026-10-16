@@ -48,7 +48,11 @@ func ApplyPodLevelMemoryHigh(pod *v1.Pod, rc *ResourceConfig, throttlingFactor f
 	if !podLevelResourcesEnabled || !resourcehelper.IsPodLevelResourcesSet(pod) {
 		return
 	}
-	opts := v1resource.PodResourcesOptions()
+	opts := resourcehelper.PodResourcesOptions{
+		Features: v1resource.Features(),
+		// TODO(pravk03): Evaluate including DRANodeAllocatableResources in the memory.high calculation.
+		ExcludeDRANodeAllocatableResources: true,
+	}
 	reqs := resourcehelper.PodRequests(pod, opts)
 	limits := resourcehelper.PodLimits(pod, opts)
 	memoryLimitsDeclared := true
