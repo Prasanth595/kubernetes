@@ -517,9 +517,12 @@ func (sched *Scheduler) podGroupSchedulingDefaultAlgorithm(ctx context.Context, 
 
 	// Run PlacementFeasible plugins to check if the pod group can meet its constraints
 	// before even attempting to schedule any pods.
+	unscheduledCount := len(queuedPodInfos)
+	scheduledCount := podGroupState.ScheduledPodsCount()
 	placementProgress := fwk.PlacementProgress{
-		Remaining: len(podGroupInfo.GetAllUnscheduledPods()),
-		Scheduled: podGroupState.ScheduledPodsCount(),
+		Total:     scheduledCount + unscheduledCount,
+		Remaining: unscheduledCount,
+		Scheduled: scheduledCount,
 	}
 	proceed, placementFeasibleStatus := podGroupPotentiallyFeasible(ctx, schedFwk, placementCycleState, podGroupInfo, placementProgress)
 	result.status = placementFeasibleStatus
@@ -1561,8 +1564,10 @@ func (sched *Scheduler) compositePodGroupSchedulingDefaultAlgorithm(ctx context.
 
 	// Run PlacementFeasible plugins to check if the composite pod group can meet its constraints
 	// before even attempting to schedule any children.
+	childrenCount := len(podGroupInfo.Children())
 	placementProgress := fwk.PlacementProgress{
-		Remaining: len(podGroupInfo.Children()),
+		Total:     childrenCount,
+		Remaining: childrenCount,
 	}
 	proceed, placementFeasibleStatus := podGroupPotentiallyFeasible(ctx, schedFwk, placementCycleState, podGroupInfo, placementProgress)
 	if !proceed {

@@ -1326,6 +1326,7 @@ func TestPlacementFeasible(t *testing.T) {
 						}
 
 						args := fwk.PlacementProgress{
+							Total:     tc.initialScheduledCount + tc.childrenCount,
 							Remaining: tc.childrenCount - (i + 1),
 							Scheduled: scheduled,
 						}
