@@ -673,6 +673,8 @@ type StorageHealth struct {
 	// At most 16 conditions may be reported.
 	// +optional
 	// +listType=atomic
+	// +k8s:alpha(since: "1.38")=+k8s:optional
+	// +k8s:alpha(since: "1.38")=+k8s:maxItems=16
 	HealthConditions []StorageHealthCondition
 }
 

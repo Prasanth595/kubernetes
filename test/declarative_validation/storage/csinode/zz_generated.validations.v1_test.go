@@ -66,6 +66,9 @@ func init() {
 			"metadata.uid": {
 				{ErrorType: "FieldValueInvalid", Origin: "immutable"},
 			},
+			"status.storageHealth[*].healthConditions": {
+				{ErrorType: "FieldValueTooMany", Origin: "maxItems"},
+			},
 			"status.storageHealth[*].healthConditions[*].message": {
 				{ErrorType: "FieldValueTooLong", Origin: "maxBytes"},
 			},

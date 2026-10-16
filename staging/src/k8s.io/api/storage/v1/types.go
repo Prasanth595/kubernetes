@@ -682,7 +682,6 @@ type VolumeNodeResources struct {
 // StorageHealthStatusType describes the health status category of a storage backend.
 // +enum
 // +k8s:alpha(since: "1.38")=+k8s:enum
-// +k8s:validation-gen-nolint
 type StorageHealthStatusType string
 
 const (
@@ -701,17 +700,17 @@ type StorageHealthCondition struct {
 	// +k8s:alpha(since: "1.38")=+k8s:required
 	Status StorageHealthStatusType `json:"status" protobuf:"bytes,1,opt,name=status,casttype=StorageHealthStatusType"`
 	// reason is a brief CamelCase machine-parseable reason.
-	// Maximum permitted length of a reason is 256 characters.
+	// Maximum permitted length of a reason is 256 bytes.
 	// +required
 	// +k8s:alpha(since: "1.38")=+k8s:required
 	// +k8s:alpha(since: "1.38")=+k8s:maxBytes=256
 	// +k8s:alpha(since: "1.38")=+k8s:format=k8s-condition-reason
 	Reason string `json:"reason" protobuf:"bytes,2,opt,name=reason"`
 	// message is a human-readable description.
+	// Maximum permitted length of a message is 1024 bytes.
 	// +optional
 	// +k8s:alpha(since: "1.38")=+k8s:optional
 	// +k8s:alpha(since: "1.38")=+k8s:maxBytes=1024
-	// Maximum permitted length of a message is 1024 characters.
 	Message string `json:"message,omitempty" protobuf:"bytes,3,opt,name=message"`
 	// accessMode is the access mode affected. Nil means all access modes are affected.
 	// +optional
@@ -735,6 +734,7 @@ type StorageHealth struct {
 	// +optional
 	// +listType=atomic
 	// +k8s:alpha(since: "1.38")=+k8s:optional
+	// +k8s:alpha(since: "1.38")=+k8s:maxItems=16
 	HealthConditions []StorageHealthCondition `json:"healthConditions,omitempty" protobuf:"bytes,2,rep,name=healthConditions"`
 }
 
