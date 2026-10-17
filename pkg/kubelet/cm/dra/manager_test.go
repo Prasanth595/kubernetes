@@ -86,6 +86,9 @@ type fakeDRADriverGRPCServer struct {
 	unprepareResourcesResponse *drapb.NodeUnprepareResourcesResponse
 	watchResourcesResponses    chan *drahealthv1.NodeWatchResourcesResponse
 	watchResourcesError        error
+	// prepareHook, if set, is called at the start of NodePrepareResources.
+	// A non-nil result is returned instead of the usual response.
+	prepareHook func(req *drapb.NodePrepareResourcesRequest) *drapb.NodePrepareResourcesResponse
 }
 
 var gatherWithoutDurations = metricstestutil.GathererFunc(func() ([]*metricstestutil.MetricFamily, error) {
@@ -105,6 +108,12 @@ var gatherWithoutDurations = metricstestutil.GathererFunc(func() ([]*metricstest
 
 func (s *fakeDRADriverGRPCServer) NodePrepareResources(ctx context.Context, req *drapb.NodePrepareResourcesRequest) (*drapb.NodePrepareResourcesResponse, error) {
 	s.prepareResourceCalls.Add(1)
+
+	if s.prepareHook != nil {
+		if resp := s.prepareHook(req); resp != nil {
+			return resp, nil
+		}
+	}
 
 	if s.timeout != nil {
 		time.Sleep(*s.timeout)
@@ -1449,6 +1458,89 @@ func TestPrepareResourcesWithUnpreparingClaim(t *testing.T) {
 		"other pod's reference must survive")
 	assert.True(t, cached.isUnpreparing(),
 		"unpreparing flag must still be set")
+}
+
+// TestPrepareResourcesClaimReplacedDuringRPC is a regression test for a claim
+// being unprepared and prepared again under the same name while
+// NodePrepareResources is in flight for the old one, either because the claim
+// was re-created (new UID) or because it was deallocated and allocated again
+// (same UID). The stale response must not be written into the new cache entry.
+func TestPrepareResourcesClaimReplacedDuringRPC(t *testing.T) {
+	for name, sameUID := range map[string]bool{
+		"claim-recreated":   false,
+		"claim-reallocated": true,
+	} {
+		t.Run(name, func(t *testing.T) {
+			logger, tCtx := ktesting.NewTestContext(t)
+			fakeKubeClient := fake.NewClientset()
+
+			manager, err := NewManager(logger, fakeKubeClient, t.TempDir())
+			require.NoError(t, err)
+			defer manager.Stop()
+			manager.initDRAPluginManager(tCtx, getFakeNode, time.Second)
+
+			podA := genTestPodWithClaims(claimName)
+			podB := genTestPodWithClaims(claimName)
+			claimA := genTestClaim(claimName, driverName, deviceName, string(podA.UID))
+			claimB := genTestClaim(claimName, driverName, deviceName, string(podB.UID))
+			if !sameUID {
+				claimB.UID = "replacement-uid"
+			}
+
+			_, err = fakeKubeClient.ResourceV1().ResourceClaims(namespace).Create(tCtx, claimA, metav1.CreateOptions{})
+			require.NoError(t, err)
+
+			draServerInfo, err := setupFakeDRADriverGRPCServer(tCtx, false, nil, nil, nil, nil)
+			require.NoError(t, err)
+			defer draServerInfo.teardownFn()
+
+			// The first prepare blocks until released. Each call returns
+			// a CDI device named after its position, so the test can tell
+			// whose response ended up in the cache.
+			var calls atomic.Uint32
+			entered := make(chan struct{})
+			release := make(chan struct{})
+			draServerInfo.server.prepareHook = func(req *drapb.NodePrepareResourcesRequest) *drapb.NodePrepareResourcesResponse {
+				n := calls.Add(1)
+				if n == 1 {
+					close(entered)
+					<-release
+				}
+				resp := genPrepareResourcesResponse(types.UID(req.Claims[0].Uid))
+				resp.Claims[req.Claims[0].Uid].Devices[0].CdiDeviceIds = []string{fmt.Sprintf("%s/%s=call-%d", driverName, driverClassName, n)}
+				return resp
+			}
+
+			plg := manager.GetWatcherHandler()
+			require.NoError(t, plg.RegisterPlugin(tCtx, driverName, draServerInfo.socketName, []string{drapb.DRAPluginService}, nil))
+
+			errA := make(chan error, 1)
+			go func() { errA <- manager.PrepareResources(tCtx, podA) }()
+			<-entered
+
+			// What reconcileLoop does once pod A is no longer active.
+			require.NoError(t, manager.unprepareResources(tCtx, podA.UID, namespace, []string{claimName}))
+
+			require.NoError(t, fakeKubeClient.ResourceV1().ResourceClaims(namespace).Delete(tCtx, claimName, metav1.DeleteOptions{}))
+			_, err = fakeKubeClient.ResourceV1().ResourceClaims(namespace).Create(tCtx, claimB, metav1.CreateOptions{})
+			require.NoError(t, err)
+			require.NoError(t, manager.PrepareResources(tCtx, podB))
+
+			close(release)
+			err = <-errA
+			require.Error(t, err, "prepare of the replaced claim must fail")
+			assert.ErrorContains(t, err, "prepared again while being prepared")
+
+			claimInfo, exists := manager.cache.get(claimName, namespace)
+			require.True(t, exists, "entry of the new claim must survive")
+			assert.Equal(t, claimB.UID, claimInfo.ClaimUID)
+			assert.True(t, claimInfo.isPrepared())
+			assert.Equal(t,
+				[]kubecontainer.CDIDevice{{Name: driverName + "/" + driverClassName + "=call-2"}},
+				claimInfo.cdiDevicesAsList(""),
+				"devices of the replaced claim must not leak into the new entry")
+		})
+	}
 }
 
 func TestUnprepareResources(t *testing.T) {
