@@ -1616,7 +1616,7 @@ func (m *kubeGenericRuntimeManager) SyncPod(ctx context.Context, pod *v1.Pod, po
 		// Termination ordering (e.g. for sidecars) only applies when the whole pod is
 		// shutting down. Here we are only restarting individual containers, so no
 		// ordering is enforced between them.
-		result.AddSyncResult(m.killContainers(ctx, pod, klog.KObj(pod), pod.UID, podContainerChanges.ContainersToKill, nil, nil)...)
+		result.AddSyncResult(m.killContainers(ctx, pod, podContainerChanges.ContainersToKill, nil, nil)...)
 		if result.Error() != nil {
 			return
 		}
