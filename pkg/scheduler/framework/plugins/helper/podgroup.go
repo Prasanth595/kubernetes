@@ -21,7 +21,7 @@ import (
 	"iter"
 
 	v1 "k8s.io/api/core/v1"
-	schedulingapi "k8s.io/api/scheduling/v1alpha3"
+	schedulingv1beta1 "k8s.io/api/scheduling/v1beta1"
 	"k8s.io/apimachinery/pkg/util/sets"
 	fwk "k8s.io/kube-scheduler/framework"
 )
@@ -41,7 +41,7 @@ func GetPodGroupStates(sharedLister fwk.SharedLister, rootEntityKey fwk.EntityKe
 	return func(yield func(fwk.PodGroupState, error) bool) {
 		var walk func(entityKey fwk.EntityKey, depth int) bool
 		walk = func(entityKey fwk.EntityKey, depth int) bool {
-			if depth >= schedulingapi.WorkloadMaxTreeDepth {
+			if depth >= schedulingv1beta1.WorkloadMaxTreeDepth {
 				return yield(nil, fmt.Errorf("exceeded maximum hierarchy depth at %v", entityKey))
 			}
 			if entityKey.GetType() == fwk.CompositePodGroupKeyType {
@@ -81,8 +81,8 @@ func TraverseHierarchyUp(snapshot fwk.SharedLister, startKey fwk.EntityKey) iter
 				yield(nil, fmt.Errorf("cycle detected in the hierarchy at %v", currentKey))
 				return
 			}
-			if visited.Len() >= schedulingapi.WorkloadMaxTreeDepth {
-				yield(nil, fmt.Errorf("exceeded maximum hierarchy depth %d at %v", schedulingapi.WorkloadMaxTreeDepth, currentKey))
+			if visited.Len() >= schedulingv1beta1.WorkloadMaxTreeDepth {
+				yield(nil, fmt.Errorf("exceeded maximum hierarchy depth %d at %v", schedulingv1beta1.WorkloadMaxTreeDepth, currentKey))
 				return
 			}
 			visited.Insert(currentKey)

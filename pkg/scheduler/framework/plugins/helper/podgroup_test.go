@@ -23,7 +23,6 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 	v1 "k8s.io/api/core/v1"
-	schedulingv1alpha3 "k8s.io/api/scheduling/v1alpha3"
 	schedulingv1beta1 "k8s.io/api/scheduling/v1beta1"
 	"k8s.io/apimachinery/pkg/util/sets"
 	utilfeature "k8s.io/apiserver/pkg/util/feature"
@@ -138,7 +137,7 @@ func TestGetPodGroupStates(t *testing.T) {
 	testCases := []struct {
 		name               string
 		podGroups          []*schedulingv1beta1.PodGroup
-		compositePodGroups []*schedulingv1alpha3.CompositePodGroup
+		compositePodGroups []*schedulingv1beta1.CompositePodGroup
 		rootEntityKey      fwk.EntityKey
 		faultyEntityKeys   []fwk.EntityKey
 		wantErrCount       int
@@ -156,7 +155,7 @@ func TestGetPodGroupStates(t *testing.T) {
 				st.MakePodGroup().Name("pg1").Namespace("test").ParentCompositePodGroup("cpg-root").Obj(),
 				st.MakePodGroup().Name("pg2").Namespace("test").ParentCompositePodGroup("cpg-root").Obj(),
 			},
-			compositePodGroups: []*schedulingv1alpha3.CompositePodGroup{
+			compositePodGroups: []*schedulingv1beta1.CompositePodGroup{
 				st.MakeCompositePodGroup().Name("cpg-root").Namespace("test").Obj(),
 			},
 			rootEntityKey: fwk.CompositePodGroupKey("test", "cpg-root"),
@@ -164,7 +163,7 @@ func TestGetPodGroupStates(t *testing.T) {
 		{
 			name:      "root is CompositePodGroup and has no leaves",
 			podGroups: []*schedulingv1beta1.PodGroup{},
-			compositePodGroups: []*schedulingv1alpha3.CompositePodGroup{
+			compositePodGroups: []*schedulingv1beta1.CompositePodGroup{
 				st.MakeCompositePodGroup().Name("cpg-root").Namespace("test").Obj(),
 			},
 			rootEntityKey: fwk.CompositePodGroupKey("test", "cpg-root"),
@@ -174,7 +173,7 @@ func TestGetPodGroupStates(t *testing.T) {
 			podGroups: []*schedulingv1beta1.PodGroup{
 				st.MakePodGroup().Name("pg-leaf").Namespace("test").ParentCompositePodGroup("cpg-mid2").Obj(),
 			},
-			compositePodGroups: []*schedulingv1alpha3.CompositePodGroup{
+			compositePodGroups: []*schedulingv1beta1.CompositePodGroup{
 				st.MakeCompositePodGroup().Name("cpg-root").Namespace("test").Obj(),
 				st.MakeCompositePodGroup().Name("cpg-mid1").Namespace("test").ParentCompositePodGroup("cpg-root").Obj(),
 				st.MakeCompositePodGroup().Name("cpg-mid2").Namespace("test").ParentCompositePodGroup("cpg-root").Obj(),
@@ -188,7 +187,7 @@ func TestGetPodGroupStates(t *testing.T) {
 		{
 			name:      "root is CompositePodGroup and multiple entity keys are missing",
 			podGroups: []*schedulingv1beta1.PodGroup{},
-			compositePodGroups: []*schedulingv1alpha3.CompositePodGroup{
+			compositePodGroups: []*schedulingv1beta1.CompositePodGroup{
 				st.MakeCompositePodGroup().Name("cpg-root").Namespace("test").Obj(),
 				st.MakeCompositePodGroup().Name("cpg-mid1").Namespace("test").ParentCompositePodGroup("cpg-root").Obj(),
 				st.MakeCompositePodGroup().Name("cpg-mid2").Namespace("test").ParentCompositePodGroup("cpg-root").Obj(),
@@ -207,7 +206,7 @@ func TestGetPodGroupStates(t *testing.T) {
 		},
 		{
 			name: "cpg tree exceeds the max depth",
-			compositePodGroups: []*schedulingv1alpha3.CompositePodGroup{
+			compositePodGroups: []*schedulingv1beta1.CompositePodGroup{
 				st.MakeCompositePodGroup().Name("cpg-root").Namespace("test").Obj(),
 				st.MakeCompositePodGroup().Name("cpg1").Namespace("test").ParentCompositePodGroup("cpg-root").Obj(),
 				st.MakeCompositePodGroup().Name("cpg2.1").Namespace("test").ParentCompositePodGroup("cpg1").Obj(),
@@ -272,7 +271,7 @@ func TestGetPodGroupStates_EarlyBreak(t *testing.T) {
 		st.MakePodGroup().Name("pg2").Namespace("test").ParentCompositePodGroup("cpg-root").Obj(),
 		st.MakePodGroup().Name("pg3").Namespace("test").ParentCompositePodGroup("cpg-root").Obj(),
 	}
-	compositePodGroups := []*schedulingv1alpha3.CompositePodGroup{
+	compositePodGroups := []*schedulingv1beta1.CompositePodGroup{
 		st.MakeCompositePodGroup().Name("cpg-root").Namespace("test").Obj(),
 	}
 
@@ -297,7 +296,7 @@ func TestTraverseHierarchyUp(t *testing.T) {
 		name                      string
 		disableCompositePodGroups bool
 		podGroups                 []*schedulingv1beta1.PodGroup
-		compositePodGroups        []*schedulingv1alpha3.CompositePodGroup
+		compositePodGroups        []*schedulingv1beta1.CompositePodGroup
 		startKey                  fwk.EntityKey
 		// stopAt makes the consumer break out of the loop after this group, if non-empty.
 		stopAt   string
@@ -318,7 +317,7 @@ func TestTraverseHierarchyUp(t *testing.T) {
 			podGroups: []*schedulingv1beta1.PodGroup{
 				st.MakePodGroup().Name("pg1").Namespace(ns).ParentCompositePodGroup("cpg1").Obj(),
 			},
-			compositePodGroups: []*schedulingv1alpha3.CompositePodGroup{
+			compositePodGroups: []*schedulingv1beta1.CompositePodGroup{
 				st.MakeCompositePodGroup().Name("cpg1").Namespace(ns).ParentCompositePodGroup("cpg2").Obj(),
 				st.MakeCompositePodGroup().Name("cpg2").Namespace(ns).Obj(),
 			},
@@ -331,7 +330,7 @@ func TestTraverseHierarchyUp(t *testing.T) {
 		},
 		{
 			name: "start from a CompositePodGroup",
-			compositePodGroups: []*schedulingv1alpha3.CompositePodGroup{
+			compositePodGroups: []*schedulingv1beta1.CompositePodGroup{
 				st.MakeCompositePodGroup().Name("cpg1").Namespace(ns).ParentCompositePodGroup("cpg2").Obj(),
 				st.MakeCompositePodGroup().Name("cpg2").Namespace(ns).Obj(),
 			},
@@ -346,7 +345,7 @@ func TestTraverseHierarchyUp(t *testing.T) {
 			podGroups: []*schedulingv1beta1.PodGroup{
 				st.MakePodGroup().Name("pg1").Namespace(ns).ParentCompositePodGroup("cpg1").Obj(),
 			},
-			compositePodGroups: []*schedulingv1alpha3.CompositePodGroup{
+			compositePodGroups: []*schedulingv1beta1.CompositePodGroup{
 				st.MakeCompositePodGroup().Name("cpg1").Namespace(ns).ParentCompositePodGroup("cpg2").Obj(),
 				st.MakeCompositePodGroup().Name("cpg2").Namespace(ns).Obj(),
 			},
@@ -377,7 +376,7 @@ func TestTraverseHierarchyUp(t *testing.T) {
 			podGroups: []*schedulingv1beta1.PodGroup{
 				st.MakePodGroup().Name("pg1").Namespace(ns).ParentCompositePodGroup("cpg1").Obj(),
 			},
-			compositePodGroups: []*schedulingv1alpha3.CompositePodGroup{
+			compositePodGroups: []*schedulingv1beta1.CompositePodGroup{
 				st.MakeCompositePodGroup().Name("cpg1").Namespace(ns).Obj(),
 			},
 			startKey: fwk.PodGroupKey(ns, "pg1"),
@@ -394,7 +393,7 @@ func TestTraverseHierarchyUp(t *testing.T) {
 			podGroups: []*schedulingv1beta1.PodGroup{
 				st.MakePodGroup().Name("pg1").Namespace(ns).ParentCompositePodGroup("cpg1").Obj(),
 			},
-			compositePodGroups: []*schedulingv1alpha3.CompositePodGroup{
+			compositePodGroups: []*schedulingv1beta1.CompositePodGroup{
 				st.MakeCompositePodGroup().Name("cpg1").Namespace(ns).ParentCompositePodGroup("cpg2").Obj(),
 				st.MakeCompositePodGroup().Name("cpg2").Namespace(ns).ParentCompositePodGroup("cpg1").Obj(),
 			},
@@ -411,7 +410,7 @@ func TestTraverseHierarchyUp(t *testing.T) {
 			podGroups: []*schedulingv1beta1.PodGroup{
 				st.MakePodGroup().Name("pg1").Namespace(ns).ParentCompositePodGroup("cpg1").Obj(),
 			},
-			compositePodGroups: []*schedulingv1alpha3.CompositePodGroup{
+			compositePodGroups: []*schedulingv1beta1.CompositePodGroup{
 				st.MakeCompositePodGroup().Name("cpg1").Namespace(ns).ParentCompositePodGroup("cpg2").Obj(),
 				st.MakeCompositePodGroup().Name("cpg2").Namespace(ns).ParentCompositePodGroup("cpg3").Obj(),
 				st.MakeCompositePodGroup().Name("cpg3").Namespace(ns).ParentCompositePodGroup("cpg4").Obj(),

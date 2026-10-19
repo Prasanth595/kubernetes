@@ -29,8 +29,7 @@ import (
 	batchv1 "k8s.io/api/batch/v1"
 	v1 "k8s.io/api/core/v1"
 	resourceapi "k8s.io/api/resource/v1"
-	schedulingv1alpha3 "k8s.io/api/scheduling/v1alpha3"
-	schedulingapi "k8s.io/api/scheduling/v1beta1"
+	schedulingv1beta1 "k8s.io/api/scheduling/v1beta1"
 	storagev1 "k8s.io/api/storage/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -392,7 +391,7 @@ func TestAddAllEventHandlers(t *testing.T) {
 				reflect.TypeFor[*resourceapi.ResourceSlice]():   true,
 				reflect.TypeFor[*resourceapi.DeviceTaintRule](): true,
 				reflect.TypeFor[*resourceapi.DeviceClass]():     true,
-				reflect.TypeFor[*schedulingapi.PodGroup]():      true,
+				reflect.TypeFor[*schedulingv1beta1.PodGroup]():  true,
 			},
 			expectDynamicInformers: map[schema.GroupVersionResource]bool{},
 		},
@@ -516,9 +515,9 @@ func TestAddAllEventHandlers(t *testing.T) {
 			expectedStaticInformers := make(map[reflect.Type]bool)
 			maps.Copy(expectedStaticInformers, tt.expectStaticInformers)
 			if utilfeature.DefaultFeatureGate.Enabled(features.GenericWorkload) {
-				expectedStaticInformers[reflect.TypeFor[*schedulingapi.PodGroup]()] = true
+				expectedStaticInformers[reflect.TypeFor[*schedulingv1beta1.PodGroup]()] = true
 				if utilfeature.DefaultFeatureGate.Enabled(features.CompositePodGroup) {
-					expectedStaticInformers[reflect.TypeFor[*schedulingv1alpha3.CompositePodGroup]()] = true
+					expectedStaticInformers[reflect.TypeFor[*schedulingv1beta1.CompositePodGroup]()] = true
 				}
 			}
 
@@ -1298,7 +1297,7 @@ func TestAddPodGroup(t *testing.T) {
 
 	tests := []struct {
 		name     string
-		podGroup *schedulingapi.PodGroup
+		podGroup *schedulingv1beta1.PodGroup
 	}{
 		{
 			name:     "add valid pod group",
@@ -1340,9 +1339,9 @@ func TestUpdatePodGroup(t *testing.T) {
 
 	tests := []struct {
 		name           string
-		oldPodGroup    *schedulingapi.PodGroup
-		newPodGroup    *schedulingapi.PodGroup
-		expectPodGroup *schedulingapi.PodGroup
+		oldPodGroup    *schedulingv1beta1.PodGroup
+		newPodGroup    *schedulingv1beta1.PodGroup
+		expectPodGroup *schedulingv1beta1.PodGroup
 	}{
 		{
 			name:           "update valid pod group",
@@ -1391,7 +1390,7 @@ func TestDeletePodGroup(t *testing.T) {
 
 	tests := []struct {
 		name             string
-		initPodGroup     *schedulingapi.PodGroup
+		initPodGroup     *schedulingv1beta1.PodGroup
 		podGroupToDelete any
 	}{
 		{
@@ -1572,7 +1571,7 @@ func TestUpdateCompositePodGroup(t *testing.T) {
 		name                string
 		oldCPG              any
 		newCPG              any
-		expectCPG           *schedulingv1alpha3.CompositePodGroup
+		expectCPG           *schedulingv1beta1.CompositePodGroup
 		cpgEnabled          bool
 		expectInCache       bool
 		triggerQueueingHint bool
@@ -1729,7 +1728,7 @@ func TestDeleteCompositePodGroup(t *testing.T) {
 
 	tests := []struct {
 		name                string
-		initCPG             *schedulingv1alpha3.CompositePodGroup
+		initCPG             *schedulingv1beta1.CompositePodGroup
 		cpgToDelete         any
 		cpgEnabled          bool
 		expectStillExists   bool

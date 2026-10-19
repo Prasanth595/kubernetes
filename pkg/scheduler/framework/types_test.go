@@ -24,7 +24,6 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 	v1 "k8s.io/api/core/v1"
-	schedulingv1alpha3 "k8s.io/api/scheduling/v1alpha3"
 	schedulingv1beta1 "k8s.io/api/scheduling/v1beta1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -4298,7 +4297,7 @@ func TestQueuedPodGroupInfo_UpdateCompositePodGroup(t *testing.T) {
 	tests := []struct {
 		name      string
 		qpgi      *QueuedPodGroupInfo
-		updateCPG *schedulingv1alpha3.CompositePodGroup
+		updateCPG *schedulingv1beta1.CompositePodGroup
 		verify    func(*testing.T, *QueuedPodGroupInfo)
 	}{
 		{
@@ -4373,7 +4372,7 @@ func TestQueuedPodGroupInfo_RemoveCompositePodGroup(t *testing.T) {
 
 	tests := []struct {
 		name      string
-		removeCPG *schedulingv1alpha3.CompositePodGroup
+		removeCPG *schedulingv1beta1.CompositePodGroup
 		qpgi      *QueuedPodGroupInfo
 		verify    func(*testing.T, *QueuedPodGroupInfo, []*QueuedPodInfo)
 	}{
@@ -5124,7 +5123,7 @@ func newPodGroupInfoForTest(pg *schedulingv1beta1.PodGroup) *PodGroupInfo {
 	}
 }
 
-func newCompositePodGroupInfoForTest(cpg *schedulingv1alpha3.CompositePodGroup, children ...*PodGroupInfo) *PodGroupInfo {
+func newCompositePodGroupInfoForTest(cpg *schedulingv1beta1.CompositePodGroup, children ...*PodGroupInfo) *PodGroupInfo {
 	return &PodGroupInfo{
 		GenericPodGroup: fwk.NewGenericCompositePodGroup(cpg),
 		children:        children,
