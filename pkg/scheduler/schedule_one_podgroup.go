@@ -643,6 +643,10 @@ func completePodGroupAlgorithmResult(ctx context.Context, queuedPodInfos []*fram
 	if numInResult == numInQueue {
 		return podGroupResult
 	}
+	skippedPodStatus := podGroupResult.status
+	if skippedPodStatus.IsError() {
+		skippedPodStatus = fwk.AsStatus(fmt.Errorf("parent pod group %q encountered an error", podGroupResult.podGroupInfo.GetName()))
+	}
 	newResults := make([]algorithmResult, numInQueue)
 	copy(newResults, podGroupResult.podResults)
 	for i := numInResult; i < numInQueue; i++ {
@@ -652,7 +656,7 @@ func completePodGroupAlgorithmResult(ctx context.Context, queuedPodInfos []*fram
 		newResults[i] = algorithmResult{
 			podInfo: pInfo,
 			podCtx:  initPodSchedulingContext(ctx, pInfo.Pod, placementCycleState),
-			status:  podGroupResult.status.Clone(),
+			status:  skippedPodStatus.Clone(),
 		}
 	}
 	podGroupResult.podResults = newResults
@@ -881,8 +885,9 @@ func (sched *Scheduler) submitPodGroupResult(ctx context.Context, schedFwk frame
 				sched.FailureHandler(ctx, schedFwk, pInfo, podResult.status, clearNominatedNode, podSchedulingStart)
 				continue
 			}
-			// Pod group failed with an error. Reject all pods with its status.
-			sched.FailureHandler(ctx, schedFwk, pInfo, podGroupResult.status, clearNominatedNode, podSchedulingStart)
+			// Pod group failed with an error. Reject all pods with a status referencing the parent pod group.
+			errStatus := fwk.AsStatus(fmt.Errorf("parent pod group %q encountered an error", pgi.GetName()))
+			sched.FailureHandler(ctx, schedFwk, pInfo, errStatus, clearNominatedNode, podSchedulingStart)
 			continue
 		}
 		if podResult.status.IsSuccess() {
