@@ -17,8 +17,11 @@ limitations under the License.
 package options
 
 import (
+	"fmt"
+
 	"github.com/spf13/pflag"
 
+	"k8s.io/apimachinery/pkg/util/validation"
 	podcertssignerconfig "k8s.io/kubernetes/pkg/controller/certificates/podcertssigner/config"
 )
 
@@ -39,7 +42,7 @@ func (o *ServiceServingSignerOptions) AddFlags(fs *pflag.FlagSet) {
 
 	fs.StringVar(&o.ServiceCACertPath, "service-serving-cert", o.ServiceCACertPath, "Path to the signer cert for the service serving signer. Expects PEM format. If there are multiple certificates in the bundle, the first one is used.")
 	fs.StringVar(&o.ServiceCAKeyPath, "service-serving-key", o.ServiceCAKeyPath, "Path to the signer key for the service serving signer. Expects a single key in PEM format.")
-	fs.StringVar(&o.ServiceCABundlePath, "service-serving-trust-bundle", o.ServiceCABundlePath, "Path to the trust bundle for the service serving signer. Used for trust distrubution within the cluster. Expects PEM format.")
+	fs.StringVar(&o.ServiceCABundlePath, "service-serving-trust-bundle", o.ServiceCABundlePath, "Path to the trust bundle for the service serving signer. Used for trust distrubution within the cluster. Expects PEM format. If unset, the file given in --service-serving-cert is used as the trust bundle.")
 	fs.StringVar(&o.ClusterServiceDomain, "cluster-service-domain", o.ClusterServiceDomain, "Cluster's service domain name. Defaults to 'cluster.local'.")
 }
 
@@ -63,9 +66,20 @@ func (o *ServiceServingSignerOptions) Validate() []error {
 		return nil
 	}
 
-	// FIXME: validate both cert/key are set if at least one is set, validate
-	// cluster domain is set
-
 	errs := []error{}
+
+	// if both are unset, assume the controller is disabled
+	if (len(o.ServiceCACertPath) == 0) != (len(o.ServiceCAKeyPath) == 0) {
+		errs = append(errs, fmt.Errorf("service-serving-cert and service-serving-key must be set together"))
+	}
+
+	if len(o.ClusterServiceDomain) == 0 {
+		errs = append(errs, fmt.Errorf("cluster-service-domain must not be empty"))
+	} else {
+		for _, msg := range validation.IsDNS1123Subdomain(o.ClusterServiceDomain) {
+			errs = append(errs, fmt.Errorf("cluster-service-domain must be a valid DNS subdomain, but got %q: %s", o.ClusterServiceDomain, msg))
+		}
+	}
+
 	return errs
 }
