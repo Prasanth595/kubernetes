@@ -863,6 +863,9 @@ type PlacementFeasiblePlugin interface {
 // can use when determining whether pod group scheduling placement is feasible.
 // It contains information about the children evaluation progress for the current pod group placement.
 type PlacementProgress struct {
+	// Total is the total number of children in the (composite) pod group for a particular placement.
+	// For a pod group the field includes both the pods that are already assigned or assumed and the unscheduled pods.
+	Total int
 	// Remaining is the number of children that have not been evaluated yet in the current scheduling cycle. For pod groups, this is the number of unscheduled pods.
 	Remaining int
 	// Scheduled is the number of children scheduled so far in the current pod group scheduling cycle
