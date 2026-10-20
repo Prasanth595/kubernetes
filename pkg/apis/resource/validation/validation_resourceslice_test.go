@@ -22,13 +22,16 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/validation/field"
+	"k8s.io/apiserver/pkg/cel/environment"
 	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	featuregatetesting "k8s.io/component-base/featuregate/testing"
+	"k8s.io/dynamic-resource-allocation/cel/sharingaffinity"
 	"k8s.io/kubernetes/pkg/apis/core"
 	resourceapi "k8s.io/kubernetes/pkg/apis/resource"
 	"k8s.io/kubernetes/pkg/features"
@@ -100,6 +103,20 @@ func testResourceSliceWithSharedCounters(name, poolName, driverName string, numC
 			Counters: testCounters(),
 		}
 		slice.Spec.SharedCounters = append(slice.Spec.SharedCounters, counterSet)
+	}
+	return slice
+}
+
+func testResourceSliceWithSharingAffinity(name, poolName, driverName string, numExtractors int) *resourceapi.ResourceSlice {
+	slice := testResourceSlice(name, poolName, driverName, 1)
+	slice.Spec.Devices = nil
+	for i := 0; i < numExtractors; i++ {
+		slice.Spec.SharingAffinity = append(slice.Spec.SharingAffinity, resourceapi.SharingAffinityExtractor{
+			Name:       fmt.Sprintf("key-%d", i),
+			APIGroup:   "networking.example.com",
+			Kind:       "NICConfig",
+			Expression: `parameters.?subnetID.orValue("")`,
+		})
 	}
 	return slice
 }
@@ -558,7 +575,7 @@ func TestValidateResourceSlice(t *testing.T) {
 		},
 		"both-shared-counters-and-devices": {
 			wantFailures: field.ErrorList{
-				field.Invalid(field.NewPath("spec"), "", "only one of `sharedCounters` or `devices` is allowed"),
+				field.Invalid(field.NewPath("spec"), "{`devices`, `sharedCounters`}", "only one of `devices`, `sharedCounters`, `sharingAffinity` is allowed"),
 			},
 			slice: func() *resourceapi.ResourceSlice {
 				slice := testResourceSlice(goodName, goodName, driverName, 1)
@@ -567,6 +584,116 @@ func TestValidateResourceSlice(t *testing.T) {
 						Name:     "counterset",
 						Counters: testCounters(),
 					},
+				}
+				return slice
+			}(),
+		},
+		"both-devices-and-sharing-affinity": {
+			wantFailures: field.ErrorList{
+				field.Invalid(field.NewPath("spec"), "{`devices`, `sharingAffinity`}", "only one of `devices`, `sharedCounters`, `sharingAffinity` is allowed"),
+			},
+			slice: func() *resourceapi.ResourceSlice {
+				slice := testResourceSlice(goodName, goodName, driverName, 1)
+				slice.Spec.SharingAffinity = []resourceapi.SharingAffinityExtractor{
+					{Name: "key", APIGroup: "*", Kind: "*", Expression: `"value"`},
+				}
+				return slice
+			}(),
+		},
+		"both-shared-counters-and-sharing-affinity": {
+			wantFailures: field.ErrorList{
+				field.Invalid(field.NewPath("spec"), "{`sharedCounters`, `sharingAffinity`}", "only one of `devices`, `sharedCounters`, `sharingAffinity` is allowed"),
+			},
+			slice: func() *resourceapi.ResourceSlice {
+				slice := testResourceSliceWithSharedCounters(goodName, goodName, driverName, 1)
+				slice.Spec.SharingAffinity = []resourceapi.SharingAffinityExtractor{
+					{Name: "key", APIGroup: "*", Kind: "*", Expression: `"value"`},
+				}
+				return slice
+			}(),
+		},
+		"all-three-resource-slice-types": {
+			wantFailures: field.ErrorList{
+				field.Invalid(field.NewPath("spec"), "{`devices`, `sharedCounters`, `sharingAffinity`}", "only one of `devices`, `sharedCounters`, `sharingAffinity` is allowed"),
+			},
+			slice: func() *resourceapi.ResourceSlice {
+				slice := testResourceSlice(goodName, goodName, driverName, 1)
+				slice.Spec.SharedCounters = []resourceapi.CounterSet{
+					{
+						Name:     "counterset",
+						Counters: testCounters(),
+					},
+				}
+				slice.Spec.SharingAffinity = []resourceapi.SharingAffinityExtractor{
+					{Name: "key", APIGroup: "*", Kind: "*", Expression: `"value"`},
+				}
+				return slice
+			}(),
+		},
+		"sharing-affinity-at-limit": {
+			slice: testResourceSliceWithSharingAffinity(goodName, goodName, driverName, resourceapi.SharingAffinityMaxEntries),
+		},
+		"too-many-sharing-affinity-entries": {
+			wantFailures: field.ErrorList{
+				field.TooMany(field.NewPath("spec", "sharingAffinity"), resourceapi.SharingAffinityMaxEntries+1, resourceapi.SharingAffinityMaxEntries).WithOrigin("maxItems").MarkCoveredByDeclarative(),
+			},
+			slice: testResourceSliceWithSharingAffinity(goodName, goodName, driverName, resourceapi.SharingAffinityMaxEntries+1),
+		},
+		"sharing-affinity-expression-not-set": {
+			wantFailures: field.ErrorList{
+				field.Required(field.NewPath("spec", "sharingAffinity").Index(0).Child("expression"), "").MarkCoveredByDeclarative(),
+			},
+			slice: func() *resourceapi.ResourceSlice {
+				slice := testResourceSliceWithSharingAffinity(goodName, goodName, driverName, 1)
+				slice.Spec.SharingAffinity[0].Expression = ""
+				return slice
+			}(),
+		},
+		"sharing-affinity-duplicate-name-equal-expression": {
+			wantFailures: field.ErrorList{
+				field.Duplicate(field.NewPath("spec", "sharingAffinity").Index(1), resourceapi.SharingAffinityExtractor{Name: "subnet", APIGroup: "*", Kind: "*", Expression: `"value"`}).MarkCoveredByDeclarative(),
+			},
+			slice: func() *resourceapi.ResourceSlice {
+				slice := testResourceSliceWithSharingAffinity(goodName, goodName, driverName, 1)
+				slice.Spec.SharingAffinity = []resourceapi.SharingAffinityExtractor{
+					{Name: "subnet", APIGroup: "*", Kind: "*", Expression: `"value"`},
+					{Name: "subnet", APIGroup: "*", Kind: "*", Expression: `"value"`},
+				}
+				return slice
+			}(),
+		},
+		"sharing-affinity-duplicate-name-different-expression": {
+			wantFailures: field.ErrorList{
+				field.Duplicate(field.NewPath("spec", "sharingAffinity").Index(1), resourceapi.SharingAffinityExtractor{Name: "subnet", APIGroup: "*", Kind: "*", Expression: `"second"`}).MarkCoveredByDeclarative(),
+			},
+			slice: func() *resourceapi.ResourceSlice {
+				slice := testResourceSliceWithSharingAffinity(goodName, goodName, driverName, 1)
+				slice.Spec.SharingAffinity = []resourceapi.SharingAffinityExtractor{
+					{Name: "subnet", APIGroup: "*", Kind: "*", Expression: `"first"`},
+					{Name: "subnet", APIGroup: "*", Kind: "*", Expression: `"second"`},
+				}
+				return slice
+			}(),
+		},
+		"sharing-affinity-duplicate-name-disjoint-matching-fields": {
+			wantFailures: field.ErrorList{
+				field.Duplicate(field.NewPath("spec", "sharingAffinity").Index(1), resourceapi.SharingAffinityExtractor{Name: "subnet", APIGroup: "b.example.com", Kind: "VFConfig", Expression: `"value"`}).MarkCoveredByDeclarative(),
+			},
+			slice: func() *resourceapi.ResourceSlice {
+				slice := testResourceSliceWithSharingAffinity(goodName, goodName, driverName, 1)
+				slice.Spec.SharingAffinity = []resourceapi.SharingAffinityExtractor{
+					{Name: "subnet", APIGroup: "a.example.com", Kind: "NICConfig", Expression: `"value"`},
+					{Name: "subnet", APIGroup: "b.example.com", Kind: "VFConfig", Expression: `"value"`},
+				}
+				return slice
+			}(),
+		},
+		"sharing-affinity-same-predicates-distinct-names-allowed": {
+			slice: func() *resourceapi.ResourceSlice {
+				slice := testResourceSliceWithSharingAffinity(goodName, goodName, driverName, 1)
+				slice.Spec.SharingAffinity = []resourceapi.SharingAffinityExtractor{
+					{Name: "subnet", APIGroup: "*", Kind: "*", Expression: `"value"`},
+					{Name: "pkey", APIGroup: "*", Kind: "*", Expression: `"value"`},
 				}
 				return slice
 			}(),
@@ -2154,6 +2281,11 @@ func TestValidateResourceSliceUpdate(t *testing.T) {
 	invalidResourceSliceWithDeviceNodeSelector.Spec.PerDeviceNodeSelection = new(true)
 	invalidResourceSliceWithDeviceNodeSelector.Spec.Devices[0].NodeSelector = &core.NodeSelector{NodeSelectorTerms: twoNodeSelectorTerms}
 
+	invalidResourceSliceWithEmptySharingAffinityExpression := testResourceSliceWithSharingAffinity(name, name, name, 1)
+	invalidResourceSliceWithEmptySharingAffinityExpression.Spec.SharingAffinity[0].Expression = ""
+	invalidResourceSliceWithLongSharingAffinityExpression := testResourceSliceWithSharingAffinity(name, name, name, 1)
+	invalidResourceSliceWithLongSharingAffinityExpression.Spec.SharingAffinity[0].Expression = `"` + strings.Repeat("x", resourceapi.SharingAffinityCELExpressionMaxLength-1) + `"`
+
 	scenarios := map[string]struct {
 		consumableCapacityFeatureGate      bool
 		fractionalCapacityRangeFeatureGate bool
@@ -2563,6 +2695,57 @@ func TestValidateResourceSliceUpdate(t *testing.T) {
 				return slice
 			},
 		},
+		"valid-ratcheting-unchanged-oversized-sharing-affinity": {
+			oldResourceSlice: testResourceSliceWithSharingAffinity(name, name, name, resourceapi.SharingAffinityMaxEntries+1),
+			update: func(slice *resourceapi.ResourceSlice) *resourceapi.ResourceSlice {
+				slice.Labels = map[string]string{"foo": "bar"}
+				return slice
+			},
+		},
+		"valid-ratcheting-unchanged-sharing-affinity-empty-expression": {
+			oldResourceSlice: invalidResourceSliceWithEmptySharingAffinityExpression,
+			update: func(slice *resourceapi.ResourceSlice) *resourceapi.ResourceSlice {
+				slice.Labels = map[string]string{"foo": "bar"}
+				return slice
+			},
+		},
+		"valid-ratcheting-unchanged-sharing-affinity-overlength-expression": {
+			oldResourceSlice: invalidResourceSliceWithLongSharingAffinityExpression,
+			update: func(slice *resourceapi.ResourceSlice) *resourceapi.ResourceSlice {
+				slice.Labels = map[string]string{"foo": "bar"}
+				return slice
+			},
+		},
+		"invalid-update-grows-sharing-affinity-over-limit": {
+			wantFailures: field.ErrorList{
+				field.TooMany(field.NewPath("spec", "sharingAffinity"), resourceapi.SharingAffinityMaxEntries+1, resourceapi.SharingAffinityMaxEntries).WithOrigin("maxItems").MarkCoveredByDeclarative(),
+			},
+			oldResourceSlice: testResourceSliceWithSharingAffinity(name, name, name, 1),
+			update: func(slice *resourceapi.ResourceSlice) *resourceapi.ResourceSlice {
+				slice.Spec.SharingAffinity = testResourceSliceWithSharingAffinity(name, name, name, resourceapi.SharingAffinityMaxEntries+1).Spec.SharingAffinity
+				return slice
+			},
+		},
+		"invalid-update-clears-sharing-affinity-expression": {
+			wantFailures: field.ErrorList{
+				field.Required(field.NewPath("spec", "sharingAffinity").Index(0).Child("expression"), "").MarkCoveredByDeclarative(),
+			},
+			oldResourceSlice: testResourceSliceWithSharingAffinity(name, name, name, 1),
+			update: func(slice *resourceapi.ResourceSlice) *resourceapi.ResourceSlice {
+				slice.Spec.SharingAffinity[0].Expression = ""
+				return slice
+			},
+		},
+		"invalid-update-grows-sharing-affinity-expression-over-limit": {
+			wantFailures: field.ErrorList{
+				field.TooLong(field.NewPath("spec", "sharingAffinity").Index(0).Child("expression"), "", resourceapi.SharingAffinityCELExpressionMaxLength).WithOrigin("maxBytes").MarkCoveredByDeclarative(),
+			},
+			oldResourceSlice: testResourceSliceWithSharingAffinity(name, name, name, 1),
+			update: func(slice *resourceapi.ResourceSlice) *resourceapi.ResourceSlice {
+				slice.Spec.SharingAffinity[0].Expression = invalidResourceSliceWithLongSharingAffinityExpression.Spec.SharingAffinity[0].Expression
+				return slice
+			},
+		},
 	}
 
 	for name, scenario := range scenarios {
@@ -2574,6 +2757,328 @@ func TestValidateResourceSliceUpdate(t *testing.T) {
 			scenario.oldResourceSlice.ResourceVersion = "1"
 			errs := ValidateResourceSliceUpdate(scenario.update(scenario.oldResourceSlice.DeepCopy()), scenario.oldResourceSlice)
 			assertFailures(t, scenario.wantFailures, errs)
+		})
+	}
+}
+
+// These fixtures measure the shared compiler rather than encoding estimator probe
+// numbers. Two expensive expressions leave a small, exactly tunable remainder.
+func sharingAffinityBudgetExpressions(t *testing.T, total uint64) []string {
+	t.Helper()
+	budget := uint64(resourceapi.SharingAffinityCELMaxCost)
+	if total != budget && total != budget+1 {
+		t.Fatalf("unsupported aggregate boundary %d", total)
+	}
+	cost := func(expr string) uint64 {
+		t.Helper()
+		if len(expr) > resourceapi.SharingAffinityCELExpressionMaxLength {
+			t.Fatalf("cost fixture is %d bytes, exceeds expression limit", len(expr))
+		}
+		result := sharingaffinity.ValidateExpression(expr, environment.NewExpressions)
+		if result.Error != nil {
+			t.Fatalf("compile cost fixture: %v", result.Error)
+		}
+		return result.MaxCost
+	}
+	expensive := func(n int) string {
+		return fmt.Sprintf("%q.matches(%q) ? 'x' : 'x'", strings.Repeat("a", 4000), strings.Repeat("a", n))
+	}
+	lo, hi := 1, 5000
+	for lo < hi {
+		mid := (lo + hi + 1) / 2
+		if cost(expensive(mid)) <= (budget-10)/2 {
+			lo = mid
+		} else {
+			hi = mid - 1
+		}
+	}
+	base := expensive(lo)
+	baseCost := cost(base)
+	if baseCost == 0 || baseCost >= uint64(resourceapi.SharingAffinityCELMaxCost) {
+		t.Fatalf("base cost %d must be positive and individually below the budget", baseCost)
+	}
+	remainder := budget - 2*baseCost
+	padding := func(n int) string {
+		return fmt.Sprintf("%q.matches('a') ? 'x' : 'x'", strings.Repeat("a", n))
+	}
+	lo, hi = 0, 10000
+	for lo < hi {
+		mid := (lo + hi) / 2
+		if cost(padding(mid)) < remainder {
+			lo = mid + 1
+		} else {
+			hi = mid
+		}
+	}
+	filler := padding(lo)
+	if cost(filler) != remainder {
+		t.Fatalf("filler cost %d, want exactly %d", cost(filler), remainder)
+	}
+	if total == budget+1 {
+		filler = "(" + filler + ") + ''"
+		if cost(filler) != remainder+1 {
+			t.Fatalf("padded filler cost %d, want exactly %d", cost(filler), remainder+1)
+		}
+	}
+	expressions := []string{base, base, filler}
+	var measured uint64
+	for _, expr := range expressions {
+		c := cost(expr)
+		if c >= uint64(resourceapi.SharingAffinityCELMaxCost) {
+			t.Fatalf("individual cost %d must be below the budget", c)
+		}
+		measured += c
+	}
+	if measured != total {
+		t.Fatalf("measured aggregate cost %d, want exactly %d", measured, total)
+	}
+	return expressions
+}
+
+func TestValidateResourceSlice_SharingAffinity(t *testing.T) {
+	p := field.NewPath("spec", "sharingAffinity")
+	entry := p.Index(0)
+	valid := resourceapi.SharingAffinityExtractor{Name: "subnet", APIGroup: "networking.example.com", Kind: "NICConfig", Expression: `parameters.?subnetID.orValue("")`}
+	maxBytes := resourceapi.SharingAffinityCELExpressionMaxLength
+	asciiAt := `"` + strings.Repeat("a", maxBytes-2) + `"`
+	unicodeAt := `"` + strings.Repeat("é", (maxBytes-2)/2) + `"`
+	unicodeOver := unicodeAt + " "
+	if len(unicodeAt) != maxBytes || len(unicodeOver) != maxBytes+1 || utf8.RuneCountInString(unicodeOver) >= maxBytes {
+		t.Fatal("invalid multibyte boundary fixtures")
+	}
+	required := func(name string) field.ErrorList { return field.ErrorList{field.Required(entry.Child(name), "")} }
+	invalid := func(name string) field.ErrorList { return field.ErrorList{field.Invalid(entry.Child(name), nil, "")} }
+	long := func(name string, maxLength int) field.ErrorList {
+		return field.ErrorList{field.TooLongCharacters(entry.Child(name), "", maxLength).WithOrigin("maxLength")}
+	}
+	longExpression := field.ErrorList{field.TooLong(entry.Child("expression"), "", maxBytes).WithOrigin("maxBytes")}
+	cases := []struct {
+		name, child, value string
+		want               field.ErrorList
+	}{
+		{"valid", "", "", nil},
+		{"name-required", "name", "", required("name")},
+		{"name-uppercase", "name", "Subnet", field.ErrorList{field.Invalid(entry.Child("name"), nil, "").WithOrigin("format=k8s-short-name")}},
+		{"name-dot", "name", "sub.net", field.ErrorList{field.Invalid(entry.Child("name"), nil, "").WithOrigin("format=k8s-short-name")}},
+		{"name-63", "name", strings.Repeat("a", 63), nil},
+		{"name-64", "name", strings.Repeat("a", 64), field.ErrorList{field.Invalid(entry.Child("name"), nil, "").WithOrigin("format=k8s-short-name")}},
+		{"apiGroup-required-not-core", "apiGroup", "", required("apiGroup")},
+		{"apiGroup-wildcard", "apiGroup", "*", nil},
+		{"apiGroup-uppercase", "apiGroup", "Example.com", invalid("apiGroup")},
+		{"apiGroup-version", "apiGroup", "example.com/v1", invalid("apiGroup")},
+		{"apiGroup-partial-wildcard", "apiGroup", "*.example.com", invalid("apiGroup")},
+		{"apiGroup-253", "apiGroup", strings.Repeat("a", 253), nil},
+		{"apiGroup-254", "apiGroup", strings.Repeat("a", 254), long("apiGroup", 253)},
+		{"apiGroup-253-runes", "apiGroup", strings.Repeat("é", 253), invalid("apiGroup")},
+		{"apiGroup-254-runes", "apiGroup", strings.Repeat("é", 254), long("apiGroup", 253)},
+		{"kind-required", "kind", "", required("kind")},
+		{"kind-wildcard", "kind", "*", nil},
+		{"kind-lowercase", "kind", "nicconfig", nil},
+		{"kind-invalid-slash", "kind", "NIC/Config", invalid("kind")},
+		{"kind-invalid-dot", "kind", "NIC.Config", invalid("kind")},
+		{"kind-leading-digit", "kind", "1Config", invalid("kind")},
+		{"kind-63", "kind", strings.Repeat("A", 63), nil},
+		{"kind-64", "kind", strings.Repeat("A", 64), long("kind", 63)},
+		{"kind-63-runes", "kind", strings.Repeat("é", 63), invalid("kind")},
+		{"kind-64-runes", "kind", strings.Repeat("é", 64), long("kind", 63)},
+		{"expression-required", "expression", "", required("expression")},
+		{"empty-string-result", "expression", `""`, nil},
+		{"dynamic-result", "expression", `parameters.subnetID`, nil},
+		{"guarded-multiple-kinds", "expression", `has(parameters.kind) && parameters.kind == "NICConfig" ? parameters.?subnetID.orValue("") : ""`, nil},
+		{"optional-access", "expression", `parameters.?subnetID.orValue("")`, nil},
+		{"bindings-extension", "expression", `cel.bind(s, parameters.?subnetID.orValue(""), s)`, nil},
+		{"object-not-declared", "expression", `object.subnetID`, invalid("expression")},
+		{"device-not-declared", "expression", `device.name`, invalid("expression")},
+		{"syntax", "expression", `parameters.`, invalid("expression")},
+		{"type-error", "expression", `1 + true`, invalid("expression")},
+		{"static-bool", "expression", `true`, invalid("expression")},
+		{"static-int", "expression", `1`, invalid("expression")},
+		{"static-double", "expression", `1.5`, invalid("expression")},
+		{"static-bytes", "expression", `b"value"`, invalid("expression")},
+		{"static-list", "expression", `["value"]`, invalid("expression")},
+		{"static-map", "expression", `{"key": "value"}`, invalid("expression")},
+		{"static-null", "expression", `null`, invalid("expression")},
+		{"ascii-at-byte-limit", "expression", asciiAt, nil},
+		{"ascii-over-byte-limit", "expression", asciiAt + " ", longExpression},
+		{"unicode-at-byte-limit", "expression", unicodeAt, nil},
+		{"unicode-over-byte-limit", "expression", unicodeOver, longExpression},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			featuregatetesting.SetFeatureGatesDuringTest(t, utilfeature.DefaultFeatureGate, featuregatetesting.FeatureOverrides{
+				features.DRAConsumableCapacity: true, features.DRASharingAffinity: true,
+			})
+			slice := testResourceSliceWithSharingAffinity("slice", "pool", "driver.example.com", 1)
+			slice.Spec.SharingAffinity[0] = valid
+			e := &slice.Spec.SharingAffinity[0]
+			switch tc.child {
+			case "name":
+				e.Name = tc.value
+			case "apiGroup":
+				e.APIGroup = tc.value
+			case "kind":
+				e.Kind = tc.value
+			case "expression":
+				e.Expression = tc.value
+			}
+			t.Run("create", func(t *testing.T) {
+				field.ErrorMatcher{}.ByType().ByField().ByOrigin().Test(t, tc.want, ValidateResourceSlice(slice))
+			})
+			t.Run("update-new-entry", func(t *testing.T) {
+				old := slice.DeepCopy()
+				old.Spec.SharingAffinity = nil
+				old.ResourceVersion, slice.ResourceVersion = "1", "1"
+				field.ErrorMatcher{}.ByType().ByField().ByOrigin().Test(t, tc.want, ValidateResourceSliceUpdate(slice, old))
+			})
+		})
+	}
+	for _, name := range []string{"missing-fields", "both-wildcards"} {
+		t.Run(name, func(t *testing.T) {
+			featuregatetesting.SetFeatureGatesDuringTest(t, utilfeature.DefaultFeatureGate, featuregatetesting.FeatureOverrides{
+				features.DRAConsumableCapacity: true, features.DRASharingAffinity: true,
+			})
+			obj := testResourceSliceWithSharingAffinity("slice", "pool", "driver.example.com", 1)
+			var want field.ErrorList
+			if name == "missing-fields" {
+				obj.Spec.SharingAffinity[0] = resourceapi.SharingAffinityExtractor{}
+				for _, child := range []string{"name", "apiGroup", "kind", "expression"} {
+					want = append(want, required(child)...)
+				}
+			} else {
+				obj.Spec.SharingAffinity[0].APIGroup, obj.Spec.SharingAffinity[0].Kind = "*", "*"
+			}
+			field.ErrorMatcher{}.ByType().ByField().ByOrigin().Test(t, want, ValidateResourceSlice(obj))
+			old := obj.DeepCopy()
+			old.Spec.SharingAffinity = nil
+			old.ResourceVersion, obj.ResourceVersion = "1", "1"
+			field.ErrorMatcher{}.ByType().ByField().ByOrigin().Test(t, want, ValidateResourceSliceUpdate(obj, old))
+		})
+	}
+}
+
+func TestValidateResourceSlice_SharingAffinityCost(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		over uint64
+	}{
+		{"aggregate-exact", 0},
+		{"aggregate-one-over", 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			featuregatetesting.SetFeatureGatesDuringTest(t, utilfeature.DefaultFeatureGate, featuregatetesting.FeatureOverrides{
+				features.DRAConsumableCapacity: true, features.DRASharingAffinity: true,
+			})
+			expressions := sharingAffinityBudgetExpressions(t, uint64(resourceapi.SharingAffinityCELMaxCost)+tc.over)
+			slice := testResourceSliceWithSharingAffinity("slice", "pool", "driver.example.com", len(expressions))
+			for i, expr := range expressions {
+				slice.Spec.SharingAffinity[i].Expression = expr
+			}
+			var want field.ErrorList
+			if tc.over != 0 {
+				want = field.ErrorList{field.Forbidden(field.NewPath("spec", "sharingAffinity"), "")}
+			}
+			field.ErrorMatcher{}.ByType().ByField().Test(t, want, ValidateResourceSlice(slice))
+			old := slice.DeepCopy()
+			old.Spec.SharingAffinity = old.Spec.SharingAffinity[:1]
+			old.ResourceVersion, slice.ResourceVersion = "1", "1"
+			field.ErrorMatcher{}.ByType().ByField().Test(t, want, ValidateResourceSliceUpdate(slice, old))
+		})
+	}
+	t.Run("individual-cost-limit", func(t *testing.T) {
+		featuregatetesting.SetFeatureGatesDuringTest(t, utilfeature.DefaultFeatureGate, featuregatetesting.FeatureOverrides{
+			features.DRAConsumableCapacity: true, features.DRASharingAffinity: true,
+		})
+		slice := testResourceSliceWithSharingAffinity("slice", "pool", "driver.example.com", 1)
+		slice.Spec.SharingAffinity[0].Expression = fmt.Sprintf("cel.bind(s, %q, (s+s).matches(s+s) ? 'yes' : 'no')", strings.Repeat("a", 4000))
+		compiled := sharingaffinity.ValidateExpression(slice.Spec.SharingAffinity[0].Expression, environment.NewExpressions)
+		if compiled.Error != nil || compiled.MaxCost <= uint64(resourceapi.SharingAffinityCELMaxCost) {
+			t.Fatalf("expected a compilable over-budget fixture, got cost %d, error %v", compiled.MaxCost, compiled.Error)
+		}
+		want := field.ErrorList{
+			field.Forbidden(field.NewPath("spec", "sharingAffinity").Index(0).Child("expression"), ""),
+			field.Forbidden(field.NewPath("spec", "sharingAffinity"), ""),
+		}
+		field.ErrorMatcher{}.ByType().ByField().Test(t, want, ValidateResourceSlice(slice))
+		old := slice.DeepCopy()
+		old.Spec.SharingAffinity[0].Expression = `""`
+		old.ResourceVersion, slice.ResourceVersion = "1", "1"
+		field.ErrorMatcher{}.ByType().ByField().Test(t, want, ValidateResourceSliceUpdate(slice, old))
+	})
+}
+
+func TestValidateResourceSlice_SharingAffinityRatcheting(t *testing.T) {
+	p := field.NewPath("spec", "sharingAffinity")
+	longExpression := `"` + strings.Repeat("é", resourceapi.SharingAffinityCELExpressionMaxLength/2) + `"`
+	cases := []struct {
+		name   string
+		stored func(*resourceapi.ResourceSlice)
+		update func(*resourceapi.ResourceSlice)
+		want   field.ErrorList
+	}{
+		{"u1-sibling-edit-ratchets-apiGroup", func(s *resourceapi.ResourceSlice) { s.Spec.SharingAffinity[0].APIGroup = strings.Repeat("a", 254) }, func(s *resourceapi.ResourceSlice) { s.Spec.SharingAffinity[1].Expression = `"changed"` }, nil},
+		{"u2-kind-edit-ratchets-apiGroup", func(s *resourceapi.ResourceSlice) { s.Spec.SharingAffinity[0].APIGroup = strings.Repeat("a", 254) }, func(s *resourceapi.ResourceSlice) { s.Spec.SharingAffinity[0].Kind = "*" }, nil},
+		{"u2-invalid-kind-still-validated", func(s *resourceapi.ResourceSlice) { s.Spec.SharingAffinity[0].APIGroup = strings.Repeat("a", 254) }, func(s *resourceapi.ResourceSlice) { s.Spec.SharingAffinity[0].Kind = "" }, field.ErrorList{field.Required(p.Index(0).Child("kind"), "")}},
+		{"u3-expression-edit-ratchets-kind", func(s *resourceapi.ResourceSlice) { s.Spec.SharingAffinity[0].Kind = "bad/kind" }, func(s *resourceapi.ResourceSlice) { s.Spec.SharingAffinity[0].Expression = `"changed"` }, nil},
+		{"u3-invalid-expression-still-validated", func(s *resourceapi.ResourceSlice) { s.Spec.SharingAffinity[0].Kind = "bad/kind" }, func(s *resourceapi.ResourceSlice) { s.Spec.SharingAffinity[0].Expression = "true" }, field.ErrorList{field.Invalid(p.Index(0).Child("expression"), nil, "")}},
+		{"u6-renamed-entry-fully-validated", func(s *resourceapi.ResourceSlice) { s.Spec.SharingAffinity[0].APIGroup = strings.Repeat("a", 254) }, func(s *resourceapi.ResourceSlice) { s.Spec.SharingAffinity[0].Name = "renamed" }, field.ErrorList{field.TooLongCharacters(p.Index(0).Child("apiGroup"), "", 253).WithOrigin("maxLength")}},
+		{"stored-overlength-expression", func(s *resourceapi.ResourceSlice) { s.Spec.SharingAffinity[0].Expression = longExpression }, nil, nil},
+		{"stored-invalid-expression", func(s *resourceapi.ResourceSlice) { s.Spec.SharingAffinity[0].Expression = "object." }, nil, nil},
+		{"stored-invalid-name", func(s *resourceapi.ResourceSlice) { s.Spec.SharingAffinity[0].Name = "Bad.Name" }, nil, nil},
+		{"stored-duplicate-names", func(s *resourceapi.ResourceSlice) { s.Spec.SharingAffinity[1].Name = s.Spec.SharingAffinity[0].Name }, nil, nil},
+		{"stored-missing-fields", func(s *resourceapi.ResourceSlice) { s.Spec.SharingAffinity[0] = resourceapi.SharingAffinityExtractor{} }, nil, nil},
+		{"changed-overlength-expression", func(s *resourceapi.ResourceSlice) { s.Spec.SharingAffinity[0].Expression = longExpression }, func(s *resourceapi.ResourceSlice) { s.Spec.SharingAffinity[0].Expression += " " }, field.ErrorList{field.TooLong(p.Index(0).Child("expression"), "", resourceapi.SharingAffinityCELExpressionMaxLength).WithOrigin("maxBytes")}},
+		{"changed-invalid-expression", func(s *resourceapi.ResourceSlice) { s.Spec.SharingAffinity[0].Expression = "object." }, func(s *resourceapi.ResourceSlice) { s.Spec.SharingAffinity[0].Expression = "parameters." }, field.ErrorList{field.Invalid(p.Index(0).Child("expression"), nil, "")}},
+		{"changed-overlength-apiGroup", func(s *resourceapi.ResourceSlice) { s.Spec.SharingAffinity[0].APIGroup = strings.Repeat("a", 254) }, func(s *resourceapi.ResourceSlice) { s.Spec.SharingAffinity[0].APIGroup = strings.Repeat("b", 254) }, field.ErrorList{field.TooLongCharacters(p.Index(0).Child("apiGroup"), "", 253).WithOrigin("maxLength")}},
+		{"reorder-correlates-by-name", func(s *resourceapi.ResourceSlice) { s.Spec.SharingAffinity[0].APIGroup = strings.Repeat("a", 254) }, func(s *resourceapi.ResourceSlice) { slices.Reverse(s.Spec.SharingAffinity) }, nil},
+		{"unchanged-long-expression-sibling-edit", func(s *resourceapi.ResourceSlice) { s.Spec.SharingAffinity[0].Expression = longExpression }, func(s *resourceapi.ResourceSlice) { s.Spec.SharingAffinity[1].Expression = `"changed"` }, nil},
+		{"renamed-long-expression-rechecked", func(s *resourceapi.ResourceSlice) { s.Spec.SharingAffinity[0].Expression = longExpression }, func(s *resourceapi.ResourceSlice) { s.Spec.SharingAffinity[0].Name = "renamed" }, field.ErrorList{field.TooLong(p.Index(0).Child("expression"), "", resourceapi.SharingAffinityCELExpressionMaxLength).WithOrigin("maxBytes")}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			featuregatetesting.SetFeatureGatesDuringTest(t, utilfeature.DefaultFeatureGate, featuregatetesting.FeatureOverrides{
+				features.DRAConsumableCapacity: true, features.DRASharingAffinity: true,
+			})
+			old := testResourceSliceWithSharingAffinity("slice", "pool", "driver.example.com", 2)
+			old.ResourceVersion = "1"
+			tc.stored(old)
+			updated := old.DeepCopy()
+			updated.Labels = map[string]string{"unrelated": "changed"}
+			if tc.update != nil {
+				tc.update(updated)
+			}
+			field.ErrorMatcher{}.ByType().ByField().ByOrigin().Test(t, tc.want, ValidateResourceSliceUpdate(updated, old))
+		})
+	}
+	for _, change := range []string{"u4-apiGroup-only", "u4-kind-only", "u5-unrelated-spec", "membership", "rename", "expression"} {
+		t.Run(change, func(t *testing.T) {
+			featuregatetesting.SetFeatureGatesDuringTest(t, utilfeature.DefaultFeatureGate, featuregatetesting.FeatureOverrides{
+				features.DRAConsumableCapacity: true, features.DRASharingAffinity: true,
+			})
+			expressions := sharingAffinityBudgetExpressions(t, uint64(resourceapi.SharingAffinityCELMaxCost)+1)
+			old := testResourceSliceWithSharingAffinity("slice", "pool", "driver.example.com", len(expressions))
+			old.ResourceVersion = "1"
+			for i, expr := range expressions {
+				old.Spec.SharingAffinity[i].APIGroup = "a.example.com"
+				old.Spec.SharingAffinity[i].Expression = expr
+			}
+			updated := old.DeepCopy()
+			want := field.ErrorList{field.Forbidden(p, "")}
+			switch change {
+			case "u4-apiGroup-only":
+				updated.Spec.SharingAffinity[0].APIGroup = "*"
+			case "u4-kind-only":
+				updated.Spec.SharingAffinity[0].Kind = "*"
+			case "u5-unrelated-spec":
+				updated.Spec.Pool.Generation++
+				want = nil
+			case "membership":
+				updated.Spec.SharingAffinity = append(updated.Spec.SharingAffinity, resourceapi.SharingAffinityExtractor{Name: "extra", APIGroup: "*", Kind: "*", Expression: `""`})
+			case "rename":
+				updated.Spec.SharingAffinity[0].Name = "renamed"
+			case "expression":
+				updated.Spec.SharingAffinity[0].Expression += " "
+			}
+			field.ErrorMatcher{}.ByType().ByField().Test(t, want, ValidateResourceSliceUpdate(updated, old))
 		})
 	}
 }
