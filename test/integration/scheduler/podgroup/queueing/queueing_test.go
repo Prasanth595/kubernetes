@@ -37,6 +37,7 @@ import (
 	frameworkruntime "k8s.io/kubernetes/pkg/scheduler/framework/runtime"
 	st "k8s.io/kubernetes/pkg/scheduler/testing"
 	stepsframework "k8s.io/kubernetes/test/integration/scheduler/podgroup/stepsframework"
+	schedulerutils "k8s.io/kubernetes/test/integration/scheduler"
 	testutils "k8s.io/kubernetes/test/integration/util"
 	"k8s.io/utils/ptr"
 )
@@ -872,7 +873,7 @@ func TestPodGroupQueueing(t *testing.T) {
 							Plugins:       &plugins,
 						}},
 					})
-					testCtx = testutils.InitTestSchedulerWithNS(t, "podgroup-queueing",
+					testCtx = schedulerutils.InitTestSchedulerWithNS(t, "podgroup-queueing",
 						scheduler.WithFrameworkOutOfTreeRegistry(registry),
 						scheduler.WithProfiles(cfg.Profiles...),
 						scheduler.WithPodMaxBackoffSeconds(0),
@@ -881,7 +882,7 @@ func TestPodGroupQueueing(t *testing.T) {
 						piPlugin.schedulingQueue = testCtx.Scheduler.SchedulingQueue
 					}
 				} else {
-					testCtx = testutils.InitTestSchedulerWithNS(t, "podgroup-queueing",
+					testCtx = schedulerutils.InitTestSchedulerWithNS(t, "podgroup-queueing",
 						scheduler.WithPodMaxBackoffSeconds(0),
 						scheduler.WithPodInitialBackoffSeconds(0))
 				}
