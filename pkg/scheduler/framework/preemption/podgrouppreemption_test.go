@@ -1330,8 +1330,7 @@ func TestPodGroupEvaluator_Preempt_Victims(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			featuregatetesting.SetFeatureGatesDuringTest(t, utilfeature.DefaultFeatureGate, featuregatetesting.FeatureOverrides{
-				features.GenericWorkload:          true,
-				features.PodGroupPreemptionPolicy: true,
+				features.GenericWorkload: true,
 			})
 			logger, ctx := ktesting.NewTestContext(t)
 
@@ -1698,7 +1697,6 @@ func TestPodGroupEvaluator_Preempt(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.GenericWorkload, true)
-			featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.PodGroupPreemptionPolicy, true)
 			logger, ctx := ktesting.NewTestContext(t)
 
 			var objs []runtime.Object
