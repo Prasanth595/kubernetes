@@ -42,6 +42,7 @@ import (
 	"k8s.io/component-base/metrics/testutil"
 	"k8s.io/klog/v2"
 	"k8s.io/ktesting"
+	podutil "k8s.io/kubernetes/pkg/api/v1/pod"
 	"k8s.io/kubernetes/pkg/features"
 	"k8s.io/kubernetes/pkg/kubelet/allocation/state"
 	"k8s.io/kubernetes/pkg/kubelet/checkpointmanager"
@@ -3959,9 +3960,11 @@ func TestAllocationManager_EmptyDirVolumeLimits_RetryPendingResizes(t *testing.T
 }
 
 type fakePodProvider struct {
-	pods        []*v1.Pod
-	getPodByUID func(types.UID) (*v1.Pod, bool)
-	syncPodNow  func(context.Context, *v1.Pod)
+	pods                       []*v1.Pod
+	statusManager              status.Manager
+	getPodByUID                func(types.UID) (*v1.Pod, bool)
+	isPodTerminatingOrTerminal func(*v1.Pod) bool
+	syncPodNow                 func(context.Context, *v1.Pod)
 }
 
 var _ PodProvider = &fakePodProvider{}
@@ -3980,6 +3983,21 @@ func (f *fakePodProvider) GetPodByUID(uid types.UID) (*v1.Pod, bool) {
 		}
 	}
 	return nil, false
+}
+
+func (f *fakePodProvider) IsPodTerminatingOrTerminal(pod *v1.Pod) bool {
+	if f.isPodTerminatingOrTerminal != nil {
+		return f.isPodTerminatingOrTerminal(pod)
+	}
+	if pod.DeletionTimestamp != nil || podutil.IsPodTerminal(pod) {
+		return true
+	}
+	if f.statusManager != nil {
+		if podStatus, ok := f.statusManager.GetPodStatus(pod.UID); ok {
+			return podutil.IsPodPhaseTerminal(podStatus.Phase)
+		}
+	}
+	return false
 }
 
 func (f *fakePodProvider) SyncPodNow(ctx context.Context, pod *v1.Pod) {
@@ -4007,7 +4025,7 @@ func makeAllocationManager(t *testing.T, runtime *containertest.FakeRuntime, all
 	allocationManager := NewInMemoryManager(
 		logger,
 		statusManager,
-		&fakePodProvider{pods: allocatedPods},
+		&fakePodProvider{pods: allocatedPods, statusManager: statusManager},
 		config.NewSourcesReady(func(_ sets.Set[string]) bool { return true }),
 		record.NewFakeRecorder(20),
 	)
@@ -4239,4 +4257,176 @@ func setupNonAllocatedCapacityTest(t *testing.T) (Manager, *v1.Pod, *v1.Pod, klo
 	})
 
 	return allocationManager, runningPod, pendingPod, logger
+}
+
+func TestRetryPendingResizesHaltsTerminatingOrTerminalPods(t *testing.T) {
+	if goruntime.GOOS == "windows" {
+		t.Skip("InPlacePodVerticalScaling is not currently supported for Windows")
+	}
+	featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.InPlacePodVerticalScaling, true)
+
+	cpu100m := resource.MustParse("100m")
+	cpu200m := resource.MustParse("200m")
+	mem100Mi := resource.MustParse("100Mi")
+	now := metav1.Now()
+
+	tests := []struct {
+		name                 string
+		mutate               func(logger klog.Logger, pod *v1.Pod, am *manager, pp *fakePodProvider)
+		hadDeferredCondition bool
+		expectAllocatedCPU   resource.Quantity
+		expectInProgress     bool
+		expectSyncTriggered  bool
+	}{
+		{
+			name:                 "running pod allocates pending resize",
+			mutate:               func(klog.Logger, *v1.Pod, *manager, *fakePodProvider) {},
+			hadDeferredCondition: true,
+			expectAllocatedCPU:   cpu200m,
+			expectInProgress:     true,
+			expectSyncTriggered:  true,
+		},
+		{
+			name: "pod with DeletionTimestamp clears pending condition and halts allocation",
+			mutate: func(_ klog.Logger, pod *v1.Pod, _ *manager, _ *fakePodProvider) {
+				pod.DeletionTimestamp = &now
+			},
+			hadDeferredCondition: true,
+			expectAllocatedCPU:   cpu100m,
+			expectInProgress:     false,
+			expectSyncTriggered:  true,
+		},
+		{
+			name: "pod with DeletionTimestamp and no prior pending condition drops resize without sync",
+			mutate: func(_ klog.Logger, pod *v1.Pod, _ *manager, _ *fakePodProvider) {
+				pod.DeletionTimestamp = &now
+			},
+			hadDeferredCondition: false,
+			expectAllocatedCPU:   cpu100m,
+			expectInProgress:     false,
+			expectSyncTriggered:  false,
+		},
+		{
+			name: "pod terminating via PodProvider halts allocation",
+			mutate: func(_ klog.Logger, pod *v1.Pod, _ *manager, pp *fakePodProvider) {
+				pp.isPodTerminatingOrTerminal = func(p *v1.Pod) bool {
+					return p.UID == pod.UID
+				}
+			},
+			hadDeferredCondition: true,
+			expectAllocatedCPU:   cpu100m,
+			expectInProgress:     false,
+			expectSyncTriggered:  true,
+		},
+		{
+			name: "pod in PodSucceeded phase halts allocation",
+			mutate: func(_ klog.Logger, pod *v1.Pod, _ *manager, _ *fakePodProvider) {
+				pod.Status.Phase = v1.PodSucceeded
+			},
+			hadDeferredCondition: true,
+			expectAllocatedCPU:   cpu100m,
+			expectInProgress:     false,
+			expectSyncTriggered:  true,
+		},
+		{
+			name: "pod in PodFailed phase halts allocation",
+			mutate: func(_ klog.Logger, pod *v1.Pod, _ *manager, _ *fakePodProvider) {
+				pod.Status.Phase = v1.PodFailed
+			},
+			hadDeferredCondition: true,
+			expectAllocatedCPU:   cpu100m,
+			expectInProgress:     false,
+			expectSyncTriggered:  true,
+		},
+		{
+			name: "pod terminal in statusManager halts allocation",
+			mutate: func(logger klog.Logger, pod *v1.Pod, am *manager, _ *fakePodProvider) {
+				am.statusManager.SetPodStatus(logger, pod, v1.PodStatus{Phase: v1.PodFailed})
+			},
+			hadDeferredCondition: true,
+			expectAllocatedCPU:   cpu100m,
+			expectInProgress:     false,
+			expectSyncTriggered:  true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			logger, tCtx := ktesting.NewTestContext(t)
+
+			allocatedPod := &v1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					UID:        "pod-1",
+					Name:       "pod-1",
+					Namespace:  "default",
+					Generation: 1,
+				},
+				Spec: v1.PodSpec{
+					Containers: []v1.Container{{
+						Name:  "c1",
+						Image: "test-image",
+						Resources: v1.ResourceRequirements{
+							Requests: v1.ResourceList{v1.ResourceCPU: cpu100m, v1.ResourceMemory: mem100Mi},
+						},
+					}},
+				},
+				Status: v1.PodStatus{
+					Phase: v1.PodRunning,
+				},
+			}
+
+			podStatus := kubecontainer.PodStatus{
+				ID:        allocatedPod.UID,
+				Name:      allocatedPod.Name,
+				Namespace: allocatedPod.Namespace,
+				ContainerStatuses: []*kubecontainer.Status{{
+					Name:  "c1",
+					State: kubecontainer.ContainerStateRunning,
+					Resources: &kubecontainer.ContainerResources{
+						CPURequest:    &cpu100m,
+						MemoryRequest: &mem100Mi,
+					},
+				}},
+			}
+
+			resizedPod := allocatedPod.DeepCopy()
+			resizedPod.Generation = 2
+			resizedPod.Spec.Containers[0].Resources.Requests[v1.ResourceCPU] = cpu200m
+
+			allocationManager := makeAllocationManager(t, &containertest.FakeRuntime{PodStatus: podStatus}, []*v1.Pod{resizedPod}, nil)
+			require.NoError(t, allocationManager.SetAllocatedResources(logger, allocatedPod))
+			t.Cleanup(func() {
+				allocationManager.RemovePod(logger, allocatedPod.UID)
+			})
+
+			am := allocationManager.(*manager)
+			pp := am.podProvider.(*fakePodProvider)
+
+			if tc.hadDeferredCondition {
+				am.statusManager.SetPodResizePendingCondition(resizedPod.UID, v1.PodReasonDeferred, "deferred", resizedPod.Generation)
+			}
+
+			allocationManager.PushPendingResize(logger, resizedPod.UID)
+			require.True(t, allocationManager.HasPendingResizes())
+
+			tc.mutate(logger, resizedPod, am, pp)
+			allocationManager.RetryPendingResizes(tCtx, TriggerReasonPodUpdated)
+
+			assert.False(t, allocationManager.HasPendingResizes(), "pending resize queue should be drained")
+
+			alloc, found := allocationManager.GetContainerResourceAllocation(resizedPod.UID, "c1")
+			require.True(t, found)
+			assert.True(t, tc.expectAllocatedCPU.Equal(*alloc.Requests.Cpu()), "expected allocated CPU %s, got %s", tc.expectAllocatedCPU.String(), alloc.Requests.Cpu().String())
+
+			conditions := am.statusManager.GetPodResizeConditions(resizedPod.UID)
+			if tc.expectInProgress {
+				require.Len(t, conditions, 1)
+				assert.Equal(t, v1.PodResizeInProgress, conditions[0].Type)
+			} else {
+				assert.Empty(t, conditions)
+			}
+
+			assert.Equal(t, tc.expectSyncTriggered, resizedPod.Annotations["pod-sync-triggered"] == "true")
+		})
+	}
 }
