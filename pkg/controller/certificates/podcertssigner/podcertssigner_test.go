@@ -17,12 +17,15 @@ limitations under the License.
 package podcertssigner
 
 import (
+	"context"
 	"crypto"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
+	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -31,11 +34,21 @@ import (
 
 	certv1 "k8s.io/api/certificates/v1"
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes/fake"
 	corev1listers "k8s.io/client-go/listers/core/v1"
+	clienttesting "k8s.io/client-go/testing"
 	"k8s.io/client-go/tools/cache"
+	"k8s.io/client-go/tools/record"
+	certutil "k8s.io/client-go/util/cert"
+	"k8s.io/client-go/util/keyutil"
+	"k8s.io/client-go/util/workqueue"
 )
+
+const testSignerName = "test.stuff/testing-signer"
 
 func TestSelectorMatchesLabels(t *testing.T) {
 	notMatched := &SigningErrorEvent{
@@ -415,6 +428,275 @@ func TestKubeServiceCATemplateMapper_MapPodCertRequestToX509Template(t *testing.
 	}
 }
 
+func TestPodCertsSignerController_syncPodCertificateRequest(t *testing.T) {
+	const testNamespace = "test-namespace"
+
+	certPath, keyPath := genTmpCertKey(t)
+
+	// Any mapper call in a case that expects the sync to bail out early surfaces as an error.
+	unexpectedMapperCall := &testCertMapper{err: errors.New("mapper must not be called")}
+
+	validTmpl, err := templateFor(eccCSR(t), 3600)
+	if err != nil {
+		t.Fatalf("failed to create a certificate template: %v", err)
+	}
+	validTmpl.DNSNames = []string{"my-svc.test-namespace.svc.cluster.local"}
+
+	testPod := &corev1.Pod{Name: "test-pod", Namespace: testNamespace, UID: "test-uid"}
+	podPCR := func() *pcrBuilder { return newPCRBuilder(t, testNamespace).WithPod("test-pod", "test-uid") }
+
+	tests := []struct {
+		name               string
+		certTemplateMapper X509TemplateMapper
+		pod                *corev1.Pod
+		pcr                *certv1.PodCertificateRequest
+		statusUpdateErr    error  // returned by the client on PCR status updates
+		wantErr            string // substring of the expected error, empty means success
+		wantEventReason    string
+		wantIssued         bool
+	}{
+		{
+			name:               "PCR is already gone",
+			certTemplateMapper: unexpectedMapperCall,
+		},
+		{
+			name:               "PCR exists but the pod's gone",
+			certTemplateMapper: unexpectedMapperCall,
+			pcr:                podPCR().B(),
+			wantErr:            "failed to find a pod",
+		},
+		{
+			name:               "PCR is being deleted",
+			certTemplateMapper: unexpectedMapperCall,
+			pod:                testPod,
+			pcr:                podPCR().WithDeletionTimestamp().B(),
+		},
+		{
+			name:               "PCR in final state: issued",
+			certTemplateMapper: unexpectedMapperCall,
+			pod:                testPod,
+			pcr:                podPCR().WithCondition(certv1.PodCertificateRequestConditionTypeIssued, metav1.ConditionTrue).B(),
+		},
+		{
+			name:               "PCR in final state: denied",
+			certTemplateMapper: unexpectedMapperCall,
+			pod:                testPod,
+			pcr:                podPCR().WithCondition(certv1.PodCertificateRequestConditionTypeDenied, metav1.ConditionTrue).B(),
+		},
+		{
+			name:               "PCR in final state: failed",
+			certTemplateMapper: unexpectedMapperCall,
+			pod:                testPod,
+			pcr:                podPCR().WithCondition(certv1.PodCertificateRequestConditionTypeFailed, metav1.ConditionTrue).B(),
+		},
+		{
+			name:               "PCR with a false final condition is still processed",
+			certTemplateMapper: &testCertMapper{tmpl: validTmpl},
+			pod:                testPod,
+			pcr:                podPCR().WithCondition(certv1.PodCertificateRequestConditionTypeIssued, metav1.ConditionFalse).B(),
+			wantIssued:         true,
+		},
+		{
+			name:               "PCR for a different signer",
+			certTemplateMapper: unexpectedMapperCall,
+			pod:                testPod,
+			pcr:                podPCR().WithSigner("other.stuff/other-signer").B(),
+			wantErr:            "signer name doesn't match",
+		},
+		{
+			name:               "pod UID differs from the one in PCR",
+			certTemplateMapper: unexpectedMapperCall,
+			pod:                &corev1.Pod{Name: "test-pod", Namespace: testNamespace, UID: "recreated-uid"},
+			pcr:                podPCR().B(),
+			wantErr:            "pod UIDs don't match",
+		},
+		{
+			name:               "mapper fails",
+			certTemplateMapper: &testCertMapper{err: errors.New("mapping went sideways")},
+			pod:                testPod,
+			pcr:                podPCR().B(),
+			wantErr:            "mapping went sideways",
+		},
+		{
+			name:               "mapper reports an event and no template",
+			certTemplateMapper: &testCertMapper{ev: &SigningErrorEvent{Reason: refServiceNotFoundReason, Message: "no such service"}},
+			pod:                testPod,
+			pcr:                podPCR().B(),
+			wantEventReason:    refServiceNotFoundReason,
+		},
+		{
+			name:               "mapper returns neither a template nor an event",
+			certTemplateMapper: &testCertMapper{},
+			pod:                testPod,
+			pcr:                podPCR().B(),
+		},
+		{
+			name:               "template cannot be signed",
+			certTemplateMapper: &testCertMapper{tmpl: &x509.Certificate{SerialNumber: validTmpl.SerialNumber}},
+			pod:                testPod,
+			pcr:                podPCR().B(),
+			wantErr:            "failed to sign cert",
+		},
+		{
+			name:               "valid request is issued",
+			certTemplateMapper: &testCertMapper{tmpl: validTmpl},
+			pod:                testPod,
+			pcr:                podPCR().B(),
+			wantIssued:         true,
+		},
+		{
+			name:               "status update fails",
+			certTemplateMapper: &testCertMapper{tmpl: validTmpl},
+			pod:                testPod,
+			pcr:                podPCR().B(),
+			statusUpdateErr:    errors.New("oh noes"),
+			wantErr:            "oh noes",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var objs []runtime.Object
+			if tt.pcr != nil {
+				objs = append(objs, tt.pcr)
+			}
+			if tt.pod != nil {
+				objs = append(objs, tt.pod)
+			}
+			fakeClient := fake.NewClientset(objs...)
+
+			var gotUpdated *certv1.PodCertificateRequest
+			fakeClient.PrependReactor("update", "podcertificaterequests", func(action clienttesting.Action) (bool, runtime.Object, error) {
+				if tt.statusUpdateErr != nil {
+					return true, nil, tt.statusUpdateErr
+				}
+				gotUpdated = action.(clienttesting.UpdateAction).GetObject().(*certv1.PodCertificateRequest)
+				return true, gotUpdated, nil
+			})
+
+			podInformer := informers.NewSharedInformerFactory(fakeClient, 0).Core().V1().Pods()
+			if tt.pod != nil {
+				if err := podInformer.Informer().GetIndexer().Add(tt.pod); err != nil {
+					t.Fatalf("failed to add pod to the informer cache: %v", err)
+				}
+			}
+
+			s, err := NewPodCertificatesSigner(t.Context(), testSignerName, certPath, keyPath, tt.certTemplateMapper, fakeClient, podInformer)
+			if err != nil {
+				t.Fatalf("could not construct receiver type: %v", err)
+			}
+
+			// The controller sets up its own PCR informer, we need to populate it
+			if tt.pcr != nil {
+				if err := s.podCertRequestsInformer.GetIndexer().Add(tt.pcr); err != nil {
+					t.Fatalf("failed to add PodCertificateRequest to the informer cache: %v", err)
+				}
+			}
+
+			recorder := record.NewFakeRecorder(10)
+			s.eventRecorder = recorder
+
+			gotErr := s.syncPodCertificateRequest(t.Context(), types.NamespacedName{Namespace: testNamespace, Name: "pcr-req"})
+			switch {
+			case gotErr != nil && tt.wantErr == "":
+				t.Fatalf("syncPodCertificateRequest() failed unexpectedly: %v", gotErr)
+			case gotErr != nil && !strings.Contains(gotErr.Error(), tt.wantErr):
+				t.Fatalf("expected an error containing %q, got: %v", tt.wantErr, gotErr)
+			case gotErr == nil && tt.wantErr != "":
+				t.Fatalf("syncPodCertificateRequest() succeeded, expected an error containing %q", tt.wantErr)
+			}
+
+			var gotEvent string
+			select {
+			case gotEvent = <-recorder.Events:
+			default:
+			}
+			if tt.wantEventReason == "" && gotEvent != "" {
+				t.Errorf("unexpected event: %q", gotEvent)
+			}
+			if tt.wantEventReason != "" && !strings.Contains(gotEvent, tt.wantEventReason) {
+				t.Errorf("expected an event with reason %q, got %q", tt.wantEventReason, gotEvent)
+			}
+
+			if !tt.wantIssued {
+				if gotUpdated != nil {
+					t.Errorf("expected no status update, got %+v", gotUpdated.Status)
+				}
+				return
+			}
+			if gotUpdated == nil {
+				t.Fatal("expected the PodCertificateRequest status to be updated")
+			}
+
+			chain, err := certutil.ParseCertsPEM([]byte(gotUpdated.Status.CertificateChain))
+			if err != nil {
+				t.Fatalf("failed to parse the issued certificate chain: %v", err)
+			}
+			if len(chain) != 2 {
+				t.Fatalf("expected the leaf and the CA in the chain, got %d certificates", len(chain))
+			}
+			if err := chain[0].CheckSignatureFrom(chain[1]); err != nil {
+				t.Errorf("leaf is not signed by the CA from the chain: %v", err)
+			}
+			if diff := cmp.Diff(validTmpl.DNSNames, chain[0].DNSNames); diff != "" {
+				t.Errorf("unexpected DNSNames (-want +got):\n%s", diff)
+			}
+			if gotUpdated.Status.NotBefore == nil || gotUpdated.Status.NotAfter == nil || gotUpdated.Status.BeginRefreshAt == nil {
+				t.Errorf("expected validity and refresh timestamps to be set, got %+v", gotUpdated.Status)
+			}
+			if len(gotUpdated.Status.Conditions) != 1 ||
+				gotUpdated.Status.Conditions[0].Type != certv1.PodCertificateRequestConditionTypeIssued ||
+				gotUpdated.Status.Conditions[0].Status != metav1.ConditionTrue {
+				t.Errorf("expected a single true Issued condition, got %+v", gotUpdated.Status.Conditions)
+			}
+		})
+	}
+}
+
+var _ X509TemplateMapper = &testCertMapper{}
+
+type testCertMapper struct {
+	err  error
+	ev   *SigningErrorEvent
+	tmpl *x509.Certificate
+}
+
+func (m *testCertMapper) HookEvents(q workqueue.TypedRateLimitingInterface[types.NamespacedName]) {}
+func (m *testCertMapper) MapPodCertRequestToX509Template(_ context.Context, pcr *certv1.PodCertificateRequest, pod *corev1.Pod) (*x509.Certificate, *SigningErrorEvent, error) {
+	return m.tmpl, m.ev, m.err
+}
+
+func genTmpCertKey(t *testing.T) (certPath, keyPath string) {
+	t.Helper()
+
+	tmpDir := t.TempDir()
+	certPath = filepath.Join(tmpDir, "tls.crt")
+	keyPath = filepath.Join(tmpDir, "tls.key")
+
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("failed to generate private key: %v", err)
+	}
+	cert, err := certutil.NewSelfSignedCACert(certutil.Config{CommonName: "pod-certs-signer-test-ca"}, key)
+	if err != nil {
+		t.Fatalf("failed to create CA certificate: %v", err)
+	}
+	keyPEM, err := keyutil.MarshalPrivateKeyToPEM(key)
+	if err != nil {
+		t.Fatalf("failed to PEM-encode the private key: %v", err)
+	}
+	certPEM, err := certutil.EncodeCertificates(cert)
+	if err != nil {
+		t.Fatalf("failed to PEM-encode the certificate: %v", err)
+	}
+	if err := keyutil.WriteKey(keyPath, keyPEM); err != nil {
+		t.Fatalf("failed to write the private key to %q: %v", keyPath, err)
+	}
+	if err := certutil.WriteCert(certPath, certPEM); err != nil {
+		t.Fatalf("failed to write the certificate  %v", err)
+	}
+	return certPath, keyPath
+}
+
 type alwaysSyncedInformer struct{ cache.SharedIndexInformer }
 
 type pcrBuilder struct {
@@ -427,6 +709,7 @@ func newPCRBuilder(t *testing.T, namespace string) *pcrBuilder {
 		PodCertificateRequest: &certv1.PodCertificateRequest{
 			Name: "pcr-req", Namespace: namespace,
 			Spec: certv1.PodCertificateRequestSpec{
+				SignerName:                testSignerName,
 				MaxExpirationSeconds:      new(int32(3600)),
 				StubPKCS10Request:         eccCSR(t),
 				UnverifiedUserAnnotations: map[string]string{},
@@ -457,6 +740,27 @@ func (b *pcrBuilder) WithServices(s ...string) *pcrBuilder {
 
 func (b *pcrBuilder) WithFQDN() *pcrBuilder {
 	b.Spec.UnverifiedUserAnnotations[AddPodFQDNKey] = "true"
+	return b
+}
+
+func (b *pcrBuilder) WithSigner(name string) *pcrBuilder {
+	b.Spec.SignerName = name
+	return b
+}
+
+func (b *pcrBuilder) WithDeletionTimestamp() *pcrBuilder {
+	b.DeletionTimestamp = &metav1.Time{Time: time.Now()}
+	return b
+}
+
+func (b *pcrBuilder) WithCondition(condType string, status metav1.ConditionStatus) *pcrBuilder {
+	b.Status.Conditions = append(b.Status.Conditions, metav1.Condition{Type: condType, Status: status})
+	return b
+}
+
+func (b *pcrBuilder) WithPod(podName, podUID string) *pcrBuilder {
+	b.Spec.PodName = podName
+	b.Spec.PodUID = types.UID(podUID)
 	return b
 }
 
