@@ -33,6 +33,7 @@ import (
 	"github.com/spf13/cobra"
 
 	coordinationv1 "k8s.io/api/coordination/v1"
+	apiextensionsclientset "k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -52,7 +53,6 @@ import (
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	v1core "k8s.io/client-go/kubernetes/typed/core/v1"
-	"k8s.io/client-go/metadata"
 	"k8s.io/client-go/metadata/metadatainformer"
 	restclient "k8s.io/client-go/rest"
 	"k8s.io/client-go/restmapper"
@@ -90,7 +90,11 @@ import (
 	kubectrlmgrconfig "k8s.io/kubernetes/pkg/controller/apis/config"
 	configv1alpha1conversion "k8s.io/kubernetes/pkg/controller/apis/config/v1alpha1"
 	garbagecollector "k8s.io/kubernetes/pkg/controller/garbagecollector"
+	"k8s.io/kubernetes/pkg/controller/podautoscaler/metrics"
 	kubefeatures "k8s.io/kubernetes/pkg/features"
+	resourceclient "k8s.io/metrics/pkg/client/clientset/versioned/typed/metrics/v1beta1"
+	"k8s.io/metrics/pkg/client/custom_metrics"
+	"k8s.io/metrics/pkg/client/external_metrics"
 )
 
 func init() {
@@ -500,6 +504,9 @@ type ControllerContext struct {
 
 	// GraphBuilder gives an access to dependencyGraphBuilder which keeps tracks of resources in the cluster
 	GraphBuilder *garbagecollector.GraphBuilder
+
+	// KubeAPIServerCAData holds the PEM-encoded CA bundle from the controller manager's kubeconfig.
+	KubeAPIServerCAData []byte
 }
 
 // IsControllerEnabled checks if the context's controllers enabled or not
@@ -511,9 +518,26 @@ func (c ControllerContext) IsControllerEnabled(controllerDescriptor *ControllerD
 	return genericcontrollermanager.IsControllerEnabled(controllerDescriptor.Name(), controllersDisabledByDefault, c.ComponentConfig.Generic.Controllers)
 }
 
-// NewClientConfig is a shortcut for ClientBuilder.Config. It wraps the error with an additional message.
-func (c ControllerContext) NewClientConfig(name string) (*restclient.Config, error) {
-	config, err := c.ClientBuilder.Config(name)
+// clientConfigGetter is implemented by the in-tree client builders. It is
+// deliberately not part of ControllerClientBuilder, so controllers cannot
+// obtain a raw client config and build a client that bypasses the transport
+// wrappers the controller manager applies. kube-controller-manager itself still
+// needs a config for the apiextensions and metrics clients, because the
+// k8s.io/controller-manager module does not depend on those client packages
+// and so cannot offer typed constructors for them. A config obtained this way
+// carries the same wrappers as any client built by the builder and must only be
+// used to construct a client, never retained or modified.
+type clientConfigGetter interface {
+	Config(name string) (*restclient.Config, error)
+}
+
+// clientConfig returns the client config that builder would use for name.
+func clientConfig(builder clientbuilder.ControllerClientBuilder, name string) (*restclient.Config, error) {
+	getter, ok := builder.(clientConfigGetter)
+	if !ok {
+		return nil, fmt.Errorf("client builder for %q does not support Config", name)
+	}
+	config, err := getter.Config(name)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create Kubernetes client config for %q: %w", name, err)
 	}
@@ -527,6 +551,38 @@ func (c ControllerContext) NewClient(name string) (kubernetes.Interface, error) 
 		return nil, fmt.Errorf("failed to create Kubernetes client for %q: %w", name, err)
 	}
 	return client, nil
+}
+
+// NewApiextensionsClient creates an apiextensions clientset for the named
+// controller from builder, which is usually c.ClientBuilder or a derivative
+// of it with different rate limits.
+func (c ControllerContext) NewApiextensionsClient(name string, builder clientbuilder.ControllerClientBuilder) (apiextensionsclientset.Interface, error) {
+	config, err := clientConfig(builder, name)
+	if err != nil {
+		return nil, err
+	}
+	return apiextensionsclientset.NewForConfig(config)
+}
+
+// NewMetricsClient creates a RESTMetricsClient for the named controller.
+func (c ControllerContext) NewMetricsClient(name string, apiVersionsGetter custom_metrics.AvailableAPIsGetter) (metrics.MetricsClient, error) {
+	clientConfig, err := clientConfig(c.ClientBuilder, name)
+	if err != nil {
+		return nil, err
+	}
+	resourceClient, err := resourceclient.NewForConfig(clientConfig)
+	if err != nil {
+		return nil, fmt.Errorf("failed to init the resource client for %s: %w", name, err)
+	}
+	externalMetricsClient, err := external_metrics.NewForConfig(clientConfig)
+	if err != nil {
+		return nil, fmt.Errorf("failed to init the external metrics client for %s: %w", name, err)
+	}
+	return metrics.NewRESTMetricsClient(
+		resourceClient,
+		custom_metrics.NewForConfig(clientConfig, c.RESTMapper, apiVersionsGetter),
+		externalMetricsClient,
+	), nil
 }
 
 // CreateControllerContext creates a context struct containing references to resources needed by the
@@ -547,12 +603,9 @@ func CreateControllerContext(ctx context.Context, s *config.CompletedConfig, roo
 		}
 	}
 
-	versionedConfig, err := rootClientBuilder.Config("shared-informers")
-	if err != nil {
-		return ControllerContext{}, fmt.Errorf("failed to create Kubernetes client config for %q: %w", "shared-informers", err)
-	}
-	versionedConfig.DropManagedFields = true
-	versionedClient, err := kubernetes.NewForConfig(versionedConfig)
+	// Informer clients ask the server to omit managedFields, see trim above.
+	informerClientBuilder := rootClientBuilder.WithDropManagedFields()
+	versionedClient, err := informerClientBuilder.Client("shared-informers")
 	if err != nil {
 		return ControllerContext{}, fmt.Errorf("failed to create Kubernetes client for %q: %w", "shared-informers", err)
 	}
@@ -564,13 +617,7 @@ func CreateControllerContext(ctx context.Context, s *config.CompletedConfig, roo
 
 	sharedInformers := informers.NewSharedInformerFactoryWithOptions(versionedClient, ResyncPeriod(s)(), informers.WithTransform(trim), informers.WithInformerName(informerName))
 
-	metadataConfig, err := rootClientBuilder.Config("metadata-informers")
-	if err != nil {
-		return ControllerContext{}, fmt.Errorf("failed to create metadata client config: %w", err)
-	}
-	metadataConfig.DropManagedFields = true
-
-	metadataClient, err := metadata.NewForConfig(metadataConfig)
+	metadataClient, err := informerClientBuilder.MetadataClient("metadata-informers")
 	if err != nil {
 		return ControllerContext{}, fmt.Errorf("failed to create metadata client: %w", err)
 	}
@@ -595,6 +642,11 @@ func CreateControllerContext(ctx context.Context, s *config.CompletedConfig, roo
 		restMapper.Reset()
 	}, 30*time.Second, ctx.Done())
 
+	var kubeAPIServerCAData []byte
+	if s.Kubeconfig != nil {
+		kubeAPIServerCAData = s.Kubeconfig.CAData
+	}
+
 	controllerContext := ControllerContext{
 		ClientBuilder:                   clientBuilder,
 		InformerFactory:                 sharedInformers,
@@ -604,6 +656,7 @@ func CreateControllerContext(ctx context.Context, s *config.CompletedConfig, roo
 		InformersStarted:                make(chan struct{}),
 		ResyncPeriod:                    ResyncPeriod(s),
 		ControllerManagerMetrics:        controllersmetrics.NewControllerManagerMetrics(kubeControllerManager),
+		KubeAPIServerCAData:             kubeAPIServerCAData,
 	}
 
 	if controllerContext.ComponentConfig.GarbageCollectorController.EnableGarbageCollector &&
