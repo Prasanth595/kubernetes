@@ -43,12 +43,13 @@ func StorageWithCacher() generic.StorageDecorator {
 		newListFunc func() runtime.Object,
 		getAttrsFunc storage.AttrFunc,
 		triggerFuncs storage.IndexerFuncs,
-		indexers *cache.Indexers) (storage.Interface, factory.DestroyFunc, error) {
+		indexers *cache.Indexers,
+		decorator func(runtime.Object)) (storage.Interface, factory.DestroyFunc, error) {
 
 		if cacheKeyFunc == nil {
 			return nil, nil, fmt.Errorf("cache key func must be provided when storage caching is enabled")
 		}
-		s, d, err := generic.NewRawStorage(storageConfig, newFunc, newListFunc, reverseKeyFunc, resourcePrefix)
+		s, d, err := generic.NewRawStorage(storageConfig, newFunc, newListFunc, reverseKeyFunc, resourcePrefix, decorator)
 		if err != nil {
 			return s, d, err
 		}
