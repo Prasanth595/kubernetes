@@ -26,7 +26,7 @@ import (
 	"k8s.io/kubernetes/pkg/scheduler"
 	st "k8s.io/kubernetes/pkg/scheduler/testing"
 	stepsframework "k8s.io/kubernetes/test/integration/scheduler/podgroup/stepsframework"
-	testutils "k8s.io/kubernetes/test/integration/util"
+	schedulerutils "k8s.io/kubernetes/test/integration/scheduler"
 )
 
 func TestHierarchyValidation(t *testing.T) {
@@ -210,7 +210,7 @@ func TestHierarchyValidation(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			testCtx := testutils.InitTestSchedulerWithNS(t, "hierarchy-val",
+			testCtx := schedulerutils.InitTestSchedulerWithNS(t, "hierarchy-val",
 				scheduler.WithPodMaxBackoffSeconds(1),
 				scheduler.WithPodInitialBackoffSeconds(1),
 			)
