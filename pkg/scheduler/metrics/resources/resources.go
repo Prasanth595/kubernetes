@@ -30,6 +30,7 @@ import (
 	"k8s.io/component-base/metrics"
 
 	resourcehelper "k8s.io/component-helpers/resource"
+	v1resource "k8s.io/kubernetes/pkg/api/v1/resource"
 	v1helper "k8s.io/kubernetes/pkg/apis/core/v1/helper"
 )
 
@@ -196,7 +197,9 @@ func podRequestsAndLimitsByLifecycle(pod *v1.Pod, reuseReqs, reuseLimits v1.Reso
 		return
 	}
 
-	reqs = resourcehelper.PodRequests(pod, resourcehelper.PodResourcesOptions{Reuse: reuseReqs})
-	limits = resourcehelper.PodLimits(pod, resourcehelper.PodResourcesOptions{Reuse: reuseLimits})
+	fts := v1resource.Features()
+	// TODO(pravk03): Evaluate including DRANodeAllocatableResources in pod resource metrics.
+	reqs = resourcehelper.PodRequests(pod, resourcehelper.PodResourcesOptions{Reuse: reuseReqs, ExcludeDRANodeAllocatableResources: true, Features: fts})
+	limits = resourcehelper.PodLimits(pod, resourcehelper.PodResourcesOptions{Reuse: reuseLimits, ExcludeDRANodeAllocatableResources: true, Features: fts})
 	return
 }
