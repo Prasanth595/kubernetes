@@ -248,7 +248,7 @@ var objWithDerivedAttributesInPrioritizedList = &resource.ResourceClaimTemplate{
 }
 
 var testCapacity = map[resource.QualifiedName]apiresource.Quantity{
-	resource.QualifiedName("test-capacity"): apiresource.MustParse("1"),
+	resource.QualifiedName("test_capacity"): apiresource.MustParse("1"),
 }
 
 var objWithCapacityRequests = func() *resource.ResourceClaimTemplate {

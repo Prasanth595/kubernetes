@@ -61,12 +61,12 @@ import (
 var ResourceNormalizationRules = []field.NormalizationRule{
 	{
 		// ResourceClaim
-		Regexp:      regexp.MustCompile(`spec\.devices\.requests\[(\d+)\]\.(deviceClassName|selectors|allocationMode|count|adminAccess|tolerations|derivedAttributes)`),
+		Regexp:      regexp.MustCompile(`spec\.devices\.requests\[(\d+)\]\.(deviceClassName|selectors|allocationMode|count|adminAccess|tolerations|derivedAttributes|capacity)`),
 		Replacement: "spec.devices.requests[$1].exactly.$2",
 	},
 	{
 		// ResourceClaimTemplate (RCT.Spec.Spec adds an extra "spec." prefix)
-		Regexp:      regexp.MustCompile(`spec\.spec\.devices\.requests\[(\d+)\]\.(deviceClassName|selectors|allocationMode|count|adminAccess|tolerations|derivedAttributes)`),
+		Regexp:      regexp.MustCompile(`spec\.spec\.devices\.requests\[(\d+)\]\.(deviceClassName|selectors|allocationMode|count|adminAccess|tolerations|derivedAttributes|capacity)`),
 		Replacement: "spec.spec.devices.requests[$1].exactly.$2",
 	},
 	{
@@ -330,6 +330,7 @@ func validateDeviceSubRequest(subRequest resource.DeviceSubRequest, fldPath *fie
 	for i, toleration := range subRequest.Tolerations {
 		allErrs = append(allErrs, validateDeviceToleration(toleration, fldPath.Child("tolerations").Index(i))...)
 	}
+	allErrs = append(allErrs, validateCapacityRequirements(subRequest.Capacity, fldPath.Child("capacity"))...)
 	return allErrs
 }
 
@@ -342,7 +343,22 @@ func validateExactDeviceRequest(request resource.ExactDeviceRequest, fldPath *fi
 	for i, toleration := range request.Tolerations {
 		allErrs = append(allErrs, validateDeviceToleration(toleration, fldPath.Child("tolerations").Index(i))...)
 	}
+	allErrs = append(allErrs, validateCapacityRequirements(request.Capacity, fldPath.Child("capacity"))...)
 	return allErrs
+}
+
+func validateCapacityRequirements(capacity *resource.CapacityRequirements, fldPath *field.Path) field.ErrorList {
+	if capacity == nil {
+		return nil
+	}
+	return validateCapacityNames(capacity.Requests, fldPath.Child("requests"))
+}
+
+// validateCapacityNames only checks the keys. The map size and the values are
+// validated declaratively.
+func validateCapacityNames(capacities map[resource.QualifiedName]apiresource.Quantity, fldPath *field.Path) field.ErrorList {
+	return validateMap(capacities, -1, attributeAndCapacityMaxKeyLength, validateQualifiedName,
+		func(apiresource.Quantity, *field.Path) field.ErrorList { return nil }, fldPath)
 }
 
 func validateDeviceAllocationMode(deviceAllocationMode resource.DeviceAllocationMode, count int64, allocModeFldPath, countFldPath *field.Path) field.ErrorList {
@@ -670,6 +686,7 @@ func validateDeviceRequestAllocationResult(result resource.DeviceRequestAllocati
 		allErrs = append(allErrs, validateUID(string(*result.ShareID), fldPath.Child("shareID")).MarkCoveredByDeclarative()...)
 	}
 	allErrs = append(allErrs, validateSkipNodeOperations(result.SkipNodeOperations, fldPath.Child("skipNodeOperations"))...)
+	allErrs = append(allErrs, validateCapacityNames(result.ConsumedCapacity, fldPath.Child("consumedCapacity"))...)
 	return allErrs
 }
 
