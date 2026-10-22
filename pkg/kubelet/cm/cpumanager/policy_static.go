@@ -1674,6 +1674,13 @@ func (p *staticPolicy) getPodTopologyHintsForAdd(logger klog.Logger, s state.Sta
 	}
 }
 
+// getPodTopologyHintsForResize generates CPU topology hint of pod scope for container-level resize
+// Every hint must cover the NUMA nodes of all currently assigned CPUs, because:
+//   - scale-up containers retain the whole assigned CPU set, so the hint must include it.
+//   - scale-down containers keep the baseline CPUs and take the rest from their assigned CPU set,
+//     so a hint that skips part of it can leave the container without enough CPUs inside the hint.
+// The available CPUs are used to expand the hint beyond the assigned CPUs when at least one container scales up.
+// Otherwise, hint is generated only based on the assigned CPUs of all containers.
 func (p *staticPolicy) getPodTopologyHintsForResize(logger klog.Logger, s state.State, pod *v1.Pod) map[string][]topologymanager.TopologyHint {
 	if !utilfeature.DefaultFeatureGate.Enabled(features.InPlacePodVerticalScalingExclusiveCPUs) || !utilfeature.DefaultFeatureGate.Enabled(features.InPlacePodVerticalScaling) {
 		logger.V(2).Info("CPU Manager pod hint generation skipped, operation not supported by the static CPU manager policy, InPlacePodVerticalScaling and/or InPlacePodVerticalScalingExclusiveCPUs are not enabled")
@@ -1696,34 +1703,28 @@ func (p *staticPolicy) getPodTopologyHintsForResize(logger klog.Logger, s state.
 		return nil
 	}
 
+	hasContainerCPUScaleUp := false
 	assignedCPUs := cpuset.New()
 	for _, container := range append(pod.Spec.InitContainers, pod.Spec.Containers...) {
-		logger_ := klog.LoggerWithValues(logger, "containerName", container.Name)
-
 		requestedByContainer := p.guaranteedCPUs(logger, pod, &container)
-		// Short circuit to regenerate the same hints if there are already
-		// guaranteed CPUs allocated to the Container. This might happen after a
-		// kubelet restart, for example.
 		if allocated, exists := s.GetCPUSet(string(pod.UID), container.Name); exists {
-			if allocated.Size() != requestedByContainer {
-				logger_.Info("CPUs already allocated to container with different number than request", "requestedByPod", requested, "requestedByContainer", requestedByContainer, "allocatedSize", allocated.Size())
-				// An empty list of hints will be treated as a preference that cannot be satisfied.
-				// In definition of hints this is equal to: TopologyHint[NUMANodeAffinity: nil, Preferred: false].
-				// For all but the best-effort policy, the Topology Manager will throw a pod-admission error.
-				return map[string][]topologymanager.TopologyHint{
-					string(v1.ResourceCPU): {},
-				}
+			if allocated.Size() < requestedByContainer {
+				hasContainerCPUScaleUp = true
 			}
-			// A set of CPUs already assigned to containers in this pod
 			assignedCPUs = assignedCPUs.Union(allocated)
 		}
 	}
-	if assignedCPUs.Size() == requested {
-		logger.Info("Regenerating TopologyHints for CPUs already allocated")
+
+	// No scale-up containers
+	if !hasContainerCPUScaleUp {
+		cpuHints := p.generateCPUTopologyHintsForResize(cpuset.New(), assignedCPUs, requested)
+		logger.Info("TopologyHints generated, No scale-up container, hints generated from assigned CPUs only", "cpuHints", cpuHints)
 		return map[string][]topologymanager.TopologyHint{
-			string(v1.ResourceCPU): p.generateCPUTopologyHints(assignedCPUs, cpuset.New(), p.GetAvailableCPUs(s), requested),
+			string(v1.ResourceCPU): cpuHints,
 		}
 	}
+
+	// At least one scale-up container
 
 	// Get a list of available CPUs.
 	available := p.GetAvailableCPUs(s)
@@ -1735,9 +1736,8 @@ func (p *staticPolicy) getPodTopologyHintsForResize(logger klog.Logger, s state.
 	// Ensure any CPUs already assigned to containers in this pod are included as part of the hint generation.
 	reusable = reusable.Union(assignedCPUs)
 
-	// Generate hints.
-	cpuHints := p.generateCPUTopologyHints(available, reusable, available, requested)
-	logger.Info("TopologyHints generated", "cpuHints", cpuHints)
+	cpuHints := p.generateCPUTopologyHintsForResize(available, reusable, requested)
+	logger.Info("TopologyHints generated, at least one scale up container, hints generated from assigned CPUs, and expanded with available CPUs", "cpuHints", cpuHints)
 
 	return map[string][]topologymanager.TopologyHint{
 		string(v1.ResourceCPU): cpuHints,
