@@ -62,16 +62,40 @@ import (
 // For `<binarySI>`, 1024 = 1Ki but 1000 = 1k; I didn't choose the
 // capitalization. See http://physics.nist.gov/cuu/Units/binary.html.
 //
-// A decimal quantity is not capped at 2^63-1 in magnitude, and no quantity is
-// limited to three decimal places: "18446744073709551616" keeps its value, and
-// "1.2345" keeps its precision (String reports it as "1234500u"). Parsing does
-// cap a binarySI quantity, silently, at 2^63-1: "8Ei" parses as 2^63-1.
-// Parsing also preserves a value only down to nano, rounding a finer non-zero
-// value away from zero, so "0.9n" becomes "1n". The int64 accessors round and
-// may overflow on top of that: see Value, MilliValue and ScaledValue.
+// Parsing may cap or round the quantity if it exceeds the supported ranges:
+//
+// - A binarySI quantity is capped at 2^63-1. "8Ei" parses as 9223372036854775807.
+//
+// - A decimalSI quantity is capped at 1.7976931348623157e308, the largest
+// float64. A 2 followed by 308 zeros parses as 1.7976931348623157e308.
+//
+// - A decimalExponent quantity is capped at 1.7976931348623157e308. "2e308"
+// parses as 1.7976931348623157e308.
+//
+// - A value keeps at most 29 significant digits, counted from its first nonzero
+// digit. Parsing rounds the remaining digits away from zero.
+//
+// - A value rounds away from zero to a whole number of nanos (1n). "1.5n"
+// parses as 2n.
+//
+// - An exponent outside the int32 range gives an unspecified result. Each
+// digit after the decimal point lowers the exponent by one, so
+// "1.25e-2147483647" is outside that range.
+//
+// Within the supported ranges the parsed value is exact. "18446744073709551616"
+// keeps its value, and "1.2345" keeps its precision (String reports it as
+// "1234500u"). The int64 accessors round and may overflow. See Value,
+// MilliValue and ScaledValue.
 //
 // When a Quantity is parsed from a string, it will remember the type of suffix
-// it had, and will use the same type again when it is serialized.
+// it had, and will use the same type again when it is serialized, with two
+// exceptions:
+//
+// - A decimalSI value whose exponent would be larger than E (10^18) is written
+// in exponent notation. "1000E" is written as "1e21".
+//
+// - A binarySI value that no binary suffix can express as a whole number is
+// written as decimalSI. "1.5Ki" is written as "1536".
 //
 // Before serializing, Quantity will be put in "canonical form".
 // This means that Exponent/suffix will be adjusted up or down (with a
@@ -363,6 +387,16 @@ func ParseQuantity(str string) (Quantity, error) {
 		return Quantity{}, ErrSuffix
 	}
 
+	if base == 10 && exceedsParseDecimalCap(num, denom, exponent) {
+		capped := int64(maxDecimalValue)
+		if !positive {
+			capped = -capped
+		}
+		q := Quantity{i: int64Amount{value: capped, scale: maxDecimalScale}, Format: format}
+		q.CacheString()
+		return q, nil
+	}
+
 	precision := int32(0)
 	scale := int32(0)
 	mantissa := int64(1)
@@ -433,19 +467,37 @@ func ParseQuantity(str string) (Quantity, error) {
 		}
 	}
 
-	amount := new(inf.Dec)
-	if _, ok := amount.SetString(value); !ok {
-		return Quantity{}, ErrNumeric
+	maxDigits := maxMantissaDigits
+	if base == 2 {
+		maxDigits = maxBinaryMantissaDigits
+	}
+	amount, err := parseMantissa(value, positive, num, denom, maxDigits)
+	if err != nil {
+		return Quantity{}, err
 	}
 
 	// So that no one but us has to think about suffixes, remove it.
 	if base == 10 {
-		exponentInfScale, canInfScale := Scale(exponent).infScale()
-		if !canInfScale {
+		if _, canInfScale := Scale(exponent).infScale(); !canInfScale {
+			// Return an error if the exponent is math.MinInt32 rather than
+			// rounding it to 1n.
 			return Quantity{}, ErrSuffix
 		}
-		// TODO: handle scale addition overflow
-		amount.SetScale(amount.Scale() + exponentInfScale)
+		// The exponent has not been applied to amount yet, so amountScale is
+		// <= 0 (e.g. -1 for "1.5") unless parseMantissa rounded the mantissa.
+		amountScale := widenInfScale(amount.Scale())
+		effectiveScale, fits := narrowScale(amountScale + widenScale(Scale(exponent)))
+		effectiveInfScale, canInfScale := effectiveScale.infScale()
+		if !fits || !canInfScale {
+			// Values above the decimal cap returned early, so both conditions
+			// here indicate that effectiveScale is below the range of inf.Scale.
+			// So we Round to Nano, offsetting by exponent since exponent has not
+			// been applied to amount yet.
+			rounded, _ := infDecAmount{amount}.AsScale(Nano - Scale(exponent))
+			amount = rounded.Dec
+			effectiveInfScale = nanoInfScale
+		}
+		amount.SetScale(effectiveInfScale)
 	} else if base == 2 {
 		// numericSuffix = 2 ** exponent
 		numericSuffix := big.NewInt(1).Lsh(bigOne, uint(exponent))
@@ -464,7 +516,10 @@ func ParseQuantity(str string) (Quantity, error) {
 	// of an amount.  Arguably, this should be inf.RoundHalfUp (normal rounding), but that would have
 	// the side effect of rounding values < .5n to zero.
 	if v, ok := amount.Unscaled(); v != int64(0) || !ok {
-		amount.Round(amount, nanoInfScale, inf.RoundUp)
+		// AsScale rounds sub-nano values up to 1n without expanding larger
+		// scales into nano digits.
+		rounded, _ := infDecAmount{amount}.AsScale(Nano)
+		amount = rounded.Dec
 	}
 
 	// The max is just a simple cap.
@@ -484,6 +539,92 @@ func ParseQuantity(str string) (Quantity, error) {
 	q := Quantity{d: infDecAmount{amount}, Format: format}
 	q.CacheString()
 	return q, nil
+}
+
+// ParseQuantity decimal cap of 1.7976931348623157e308, which supports the
+// magnitude of the largest float64.
+const (
+	// maxDecimalDigits is the significant digits of the decimal cap.
+	maxDecimalDigits = "17976931348623157"
+	// maxDecimalValue is the int64 value of the decimal cap's significant digits.
+	maxDecimalValue = 17976931348623157
+	// maxDecimalExponent is the exponent of the decimal cap in scientific
+	// notation (1.7976931348623157e308).
+	maxDecimalExponent = 308
+	// maxDecimalScale is the cap as Quantity scale that is offset to
+	// account for the number of significant digits (17976931348623157e292).
+	maxDecimalScale = Scale(maxDecimalExponent - (len(maxDecimalDigits) - 1))
+)
+
+// exceedsParseDecimalCap returns true if a decimal value exceeds the decimal cap.
+func exceedsParseDecimalCap(num, denom string, exponent int32) bool {
+	// Short-circuit if obviously below the limit.
+	if int64(exponent)+int64(len(num))-1 < maxDecimalExponent {
+		return false
+	}
+	digits := num + denom
+	significant := strings.TrimLeft(digits, "0")
+	if significant == "" {
+		return false // value is zero
+	}
+	decimalExponent := int64(exponent) + int64(len(num)) - 1 - int64(len(digits)-len(significant))
+	if decimalExponent != maxDecimalExponent {
+		return decimalExponent > maxDecimalExponent
+	}
+	// Leading digits line up and trailing zeros are trimmed.
+	return strings.TrimRight(significant, "0") > maxDecimalDigits
+}
+
+// maxMantissaDigits is how many significant digits ParseQuantity keeps in a
+// decimal mantissa. 29 digits hold any int64 value at nano precision.
+// This matches the precision supported by Add and Sub.
+const maxMantissaDigits = 29
+
+// maxBinaryMantissaDigits is how many significant digits ParseQuantity keeps in
+// a binarySI mantissa. The mantissa is rounded before it is multiplied by the
+// suffix, and with Ei (2^60) a whole number of nanos up to 2^63-1 can require
+// 88 (19 + 9 + 60) digits.
+const maxBinaryMantissaDigits = 88
+
+// parseMantissa parses the number in front of a quantity's suffix, keeping at
+// most maxDigits significant digits.
+//
+// Extra digits are rounded away from zero, the way ParseQuantity rounds values
+// below 1n, and the scale absorbs them so the value keeps its size: with
+// maxDigits 3, "123456" parses as 124e3.
+func parseMantissa(value string, positive bool, num, denom string, maxDigits int) (*inf.Dec, error) {
+	amount := new(inf.Dec)
+	digits := strings.TrimLeft(num+denom, "0")
+	if len(digits) <= maxDigits {
+		if _, ok := amount.SetString(value); !ok {
+			return nil, ErrNumeric
+		}
+		return amount, nil
+	}
+
+	kept, dropped := digits[:maxDigits], digits[maxDigits:]
+	amount.SetString(kept)
+	// The value is kept * 10^(len(dropped) - len(denom)).
+	wideScale := widenedScale(len(dropped) - len(denom))
+	if strings.Trim(dropped, "0") != "" {
+		amount.Add(amount, decOne)
+		// Rounding up all nines carries into another digit.
+		if strings.Trim(kept, "9") == "" {
+			ub := amount.UnscaledBig()
+			amount.SetUnscaledBig(ub.Quo(ub, bigTen))
+			wideScale++
+		}
+	}
+	if !positive {
+		amount.Neg(amount)
+	}
+	scale, fits := narrowScale(wideScale)
+	infScale, canInfScale := scale.infScale()
+	if !fits || !canInfScale {
+		return nil, ErrNumeric
+	}
+	amount.SetScale(infScale)
+	return amount, nil
 }
 
 // DeepCopy returns a deep-copy of the Quantity value.
@@ -529,6 +670,11 @@ func (q *Quantity) CanonicalizeBytes(out []byte) (result, suffix []byte) {
 		if q.CmpInt64(-1024) > 0 && q.CmpInt64(1024) < 0 {
 			// This avoids rounding and hopefully confusion, too.
 			format = DecimalSI
+		} else if q.widenedScale() >= 70 {
+			// Short-circuit the base-1024 computation, since q is guaranteed to
+			// print in exponent notation. A Scale of 70 or more is at least
+			// 1024^7, more than the largest BinarySI suffix (1024^6).
+			format = DecimalExponent
 		} else {
 			var exact bool
 			if rounded, exact = q.AsScale(0); !exact {
