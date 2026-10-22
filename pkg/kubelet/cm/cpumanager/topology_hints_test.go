@@ -913,3 +913,94 @@ func returnTestCases() []testCase {
 		},
 	}
 }
+
+func TestGetPodTopologyHintsForResize(t *testing.T) {
+	logger, _ := ktesting.NewTestContext(t)
+
+	m0011, _ := bitmask.NewBitMask(0, 1)
+	m0101, _ := bitmask.NewBitMask(0, 2)
+	m1001, _ := bitmask.NewBitMask(0, 3)
+	m0111, _ := bitmask.NewBitMask(0, 1, 2)
+	m1011, _ := bitmask.NewBitMask(0, 1, 3)
+	m1101, _ := bitmask.NewBitMask(0, 2, 3)
+	m1111, _ := bitmask.NewBitMask(0, 1, 2, 3)
+
+	testCases := []struct {
+		description   string
+		pod           *v1.Pod
+		assignments   state.ContainerCPUAssignments
+		defaultCPUSet cpuset.CPUSet
+		cpusToReuse   map[string]cpuset.CPUSet
+		expectedHints []topologymanager.TopologyHint
+		policyOptions map[string]string
+	}{
+		{
+			description:   "scale-up satisfiable within the assigned NUMA node",
+			pod:           pod: makeMultiContainerPodWithOptions(nil, []*containerOptions{
+				{request: "4", limit: "4"},
+				{request: "4", limit: "4"},
+			}),
+			assignments: state.ContainerCPUAssignments{"podUID": {
+				"appContainer-0": mustParseCPUSet(t, "0-3"),
+				"appContainer-1": mustParseCPUSet(t, "4-7"),
+			}},
+			defaultCPUSet: mustParseCPUSet(t, "8-79"),
+			expectedHints: []topologymanager.TopologyHint{
+				{NUMANodeAffinity: m0, Preferred: true},
+				{NUMANodeAffinity: m01, Preferred: false},
+				{NUMANodeAffinity: m02, Preferred: false},
+				{NUMANodeAffinity: m03, Preferred: false},
+				{NUMANodeAffinity: m012, Preferred: false},
+				{NUMANodeAffinity: m013, Preferred: false},
+				{NUMANodeAffinity: m023, Preferred: false},
+				{NUMANodeAffinity: m0123, Preferred: false},
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.description, func(t *testing.T) {
+			featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.InPlacePodVerticalScaling, true)
+			featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.InPlacePodVerticalScalingExclusiveCPUs, true)
+
+			var activePods []*v1.Pod
+			for p := range tc.assignments {
+				pod := v1.Pod{}
+				pod.UID = types.UID(p)
+				for c := range tc.assignments[p] {
+					container := v1.Container{}
+					container.Name = c
+					pod.Spec.Containers = append(pod.Spec.Containers, container)
+				}
+				activePods = append(activePods, &pod)
+			}
+			m := manager{
+				policy: &staticPolicy{
+					topology:    topoDualSocketMultiNumaPerSocketHT,
+					numaNodes:   topoDualSocketMultiNumaPerSocketHT.CPUDetails.NUMANodes().List(),
+					cpusToReuse: tc.cpusToReuse,
+				},
+				state: &mockState{
+					assignments:   tc.assignments,
+					defaultCPUSet: tc.defaultCPUSet,
+				},
+				topology:          topoDualSocketMultiNumaPerSocketHT,
+				activePods:        func() []*v1.Pod { return activePods },
+				podStatusProvider: mockPodStatusProvider{},
+				sourcesReady:      &sourcesReadyStub{},
+			}
+
+			podHints := m.GetPodTopologyHints(logger, tc.pod, lifecycle.ResizeOperation)[string(v1.ResourceCPU)]
+
+			sort.SliceStable(podHints, func(i, j int) bool {
+				return podHints[i].LessThan(podHints[j])
+			})
+			sort.SliceStable(tc.expectedHints, func(i, j int) bool {
+				return tc.expectedHints[i].LessThan(tc.expectedHints[j])
+			})
+			if !reflect.DeepEqual(tc.expectedHints, podHints) {
+				t.Errorf("Expected in result to be %v, got %v", tc.expectedHints, podHints)
+			}
+		})
+	}
+}
