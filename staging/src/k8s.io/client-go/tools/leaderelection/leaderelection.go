@@ -64,6 +64,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/wait"
 	rl "k8s.io/client-go/tools/leaderelection/resourcelock"
+	"k8s.io/client-go/transport"
 	"k8s.io/klog/v2"
 	"k8s.io/utils/clock"
 )
@@ -89,6 +90,12 @@ func NewLeaderElector(lec LeaderElectionConfig) (*LeaderElector, error) {
 	if lec.RetryPeriod < 1 {
 		return nil, fmt.Errorf("retryPeriod must be greater than zero")
 	}
+	if lec.Recovery != nil && lec.Recovery.RecoveryDeadline != nil && *lec.Recovery.RecoveryDeadline < time.Second {
+		return nil, fmt.Errorf("recoveryDeadline must be at least one second")
+	}
+	if lec.Recovery != nil && lec.Coordinated {
+		return nil, fmt.Errorf("recovery is not supported with coordinated leader election")
+	}
 	if lec.Callbacks.OnStartedLeading == nil {
 		return nil, fmt.Errorf("OnStartedLeading callback must not be nil")
 	}
@@ -105,9 +112,10 @@ func NewLeaderElector(lec LeaderElectionConfig) (*LeaderElector, error) {
 	}
 
 	le := LeaderElector{
-		config:  lec,
-		clock:   clock.RealClock{},
-		metrics: globalMetricsFactory.newLeaderMetrics(),
+		config:    lec,
+		clock:     clock.RealClock{},
+		metrics:   globalMetricsFactory.newLeaderMetrics(),
+		writeGate: &writeGate{},
 	}
 	le.metrics.leaderOff(le.config.Name)
 	return &le, nil
@@ -163,6 +171,29 @@ type LeaderElectionConfig struct {
 	// Coordinated will use the Coordinated Leader Election feature
 	// WARNING: Coordinated leader election is ALPHA.
 	Coordinated bool
+
+	// Recovery configures how the elector handles API unavailability. If set,
+	// failing to renew the lease within RenewDeadline does not end the
+	// election loop: the write gate closes and OnStoppedLeading is called, but
+	// the elector keeps attempting to renew the lease it held and reopens the
+	// gate on success. See RecoveryConfig for when the loop ends instead.
+	// Recovery is not supported together with Coordinated.
+	// WARNING: Leader election recovery is ALPHA.
+	Recovery *RecoveryConfig
+}
+
+// RecoveryConfig configures how the elector handles API unavailability.
+type RecoveryConfig struct {
+	// RecoveryDeadline limits how long to attempt to renew the lease after
+	// losing it due to API unavailability. When the limit is reached, Run
+	// returns and callers exit.
+	//
+	// Regardless of the deadline, if another candidate claims the lease, or the
+	// lease is deleted, Run returns and callers exit. Recovery only ever renews
+	// the lease this elector still holds, it never re-acquires it.
+	//
+	// No limit if unset. The value must be at least one second if set.
+	RecoveryDeadline *time.Duration
 }
 
 // LeaderCallbacks are callbacks that are triggered during certain
@@ -171,12 +202,17 @@ type LeaderElectionConfig struct {
 // possible future callbacks:
 //   - OnChallenge()
 type LeaderCallbacks struct {
-	// OnStartedLeading is called when a LeaderElector client starts leading
+	// OnStartedLeading is called when a LeaderElector client starts leading.
+	// It is called at most once per Run.
 	OnStartedLeading func(context.Context)
 	// OnStoppedLeading is called when a LeaderElector client stops leading.
 	// This callback is always called when the LeaderElector exits, even if it did not start leading.
 	// Users should not assume that OnStoppedLeading is only called after OnStartedLeading.
 	// see: https://github.com/kubernetes/kubernetes/pull/127675#discussion_r1780059887
+	//
+	// In recovery mode (see LeaderElectionConfig.Recovery) it is called each
+	// time the write gate closes, which is the signal that writes are blocked,
+	// not that the elector gave up.
 	OnStoppedLeading func()
 	// OnNewLeader is called when the client observes a leader that is
 	// not the previously observed leader. This includes the first observed
@@ -202,6 +238,18 @@ type LeaderElector struct {
 	// used to lock the observedRecord and the observedTime
 	observedRecordLock sync.RWMutex
 
+	// lastAttemptTime is when the elector last started an attempt to acquire
+	// or renew the lease.
+	lastAttemptTime time.Time
+
+	// writeGate is open only while this elector is leading.
+	writeGate *writeGate
+
+	// leading and stoppedLeadingNotified track the state of the election
+	// loop. They are only accessed from the goroutine running Run.
+	leading                bool
+	stoppedLeadingNotified bool
+
 	metrics leaderMetricsAdapter
 }
 
@@ -210,7 +258,7 @@ type LeaderElector struct {
 // stopped holding the leader lease
 func (le *LeaderElector) Run(ctx context.Context) {
 	defer runtime.HandleCrashWithContext(ctx)
-	defer le.config.Callbacks.OnStoppedLeading()
+	defer le.notifyStoppedLeading()
 
 	if !le.acquire(ctx) {
 		return // ctx signalled done
@@ -247,6 +295,21 @@ func (le *LeaderElector) IsLeader() bool {
 	return le.getObservedRecord().HolderIdentity == le.config.Lock.Identity()
 }
 
+// WriteGate returns a transport wrapper that blocks write requests whenever
+// this elector is not leading.
+//
+// Only the safe methods of RFC 9110 (GET, HEAD, OPTIONS, TRACE) pass while the
+// elector is not leading. Every other method is rejected with
+// ErrWriteGateClosed, and write requests that are in flight when the elector
+// stops leading are cancelled. The gate opens when the elector starts leading
+// and closes when it stops leading, alongside OnStartedLeading and
+// OnStoppedLeading.
+//
+// The lock's own client must not be gated, or the elector could not renew.
+func (le *LeaderElector) WriteGate() transport.WrapperFunc {
+	return le.writeGate.wrapper()
+}
+
 // acquire loops calling tryAcquireOrRenew and returns true immediately when tryAcquireOrRenew succeeds.
 // Returns false if ctx signals done.
 func (le *LeaderElector) acquire(ctx context.Context) bool {
@@ -267,8 +330,7 @@ func (le *LeaderElector) acquire(ctx context.Context) bool {
 			logger.V(4).Info("Failed to acquire lease", "lock", desc)
 			return
 		}
-		le.config.Lock.RecordEvent("became leader")
-		le.metrics.leaderOn(le.config.Name)
+		le.startLeading("became leader")
 		logger.Info("Successfully acquired lease", "lock", desc)
 		cancel()
 	}, le.config.RetryPeriod, JitterFactor, true)
@@ -276,8 +338,8 @@ func (le *LeaderElector) acquire(ctx context.Context) bool {
 }
 
 // renew loops calling tryAcquireOrRenew and returns immediately when tryAcquireOrRenew fails or ctx signals done.
+// In recovery mode, a failure to renew does not end the loop as long as the lease can be recovered.
 func (le *LeaderElector) renew(ctx context.Context) {
-	defer le.config.Lock.RecordEvent("stopped leading")
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	logger := klog.FromContext(ctx)
@@ -300,15 +362,151 @@ func (le *LeaderElector) renew(ctx context.Context) {
 			logger.V(5).Info("Successfully renewed lease", "lock", desc)
 			return
 		}
-		le.metrics.leaderOff(le.config.Name)
 		logger.Info("Failed to renew lease", "lock", desc, "err", err)
-		cancel()
+		le.stopLeading()
+		if le.config.Recovery == nil || ctx.Err() != nil {
+			cancel()
+			return
+		}
+		// Recovery mode: writes are blocked by the gate now, which is what
+		// OnStoppedLeading signals. Keep trying to renew the lease we held.
+		le.notifyStoppedLeading()
+		if !le.recoverLease(ctx) {
+			cancel()
+			return
+		}
+		le.startLeading("resumed leading")
+		logger.Info("Successfully recovered lease", "lock", desc)
 	}, le.config.RetryPeriod)
+	// The loop can also end on context cancellation between two iterations.
+	le.stopLeading()
 
 	// if we hold the lease, give it up
 	if le.config.ReleaseOnCancel {
 		le.release(logger)
 	}
+}
+
+// startLeading opens the write gate and records that this elector is leading.
+func (le *LeaderElector) startLeading(event string) {
+	le.leading = true
+	le.stoppedLeadingNotified = false
+	le.writeGate.open()
+	le.metrics.leaderOn(le.config.Name)
+	le.config.Lock.RecordEvent(event)
+}
+
+// stopLeading closes the write gate and records that this elector is no longer
+// leading. It is a no-op if the elector is not leading.
+func (le *LeaderElector) stopLeading() {
+	if !le.leading {
+		return
+	}
+	le.leading = false
+	le.writeGate.close()
+	le.metrics.leaderOff(le.config.Name)
+	le.config.Lock.RecordEvent("stopped leading")
+}
+
+// notifyStoppedLeading calls OnStoppedLeading unless it has already been called
+// since the elector last started leading.
+func (le *LeaderElector) notifyStoppedLeading() {
+	if le.stoppedLeadingNotified {
+		return
+	}
+	le.stoppedLeadingNotified = true
+	le.config.Callbacks.OnStoppedLeading()
+}
+
+// recoverLease keeps attempting to renew the lease this elector held, at
+// RetryPeriod, until one of: the renewal succeeds (returns true), the lease is
+// observed to have changed hands or been deleted, the recovery deadline
+// passes, or ctx is cancelled (all return false).
+func (le *LeaderElector) recoverLease(ctx context.Context) bool {
+	logger := klog.FromContext(ctx)
+	desc := le.config.Lock.Describe()
+	var cancel context.CancelFunc
+	if deadline := le.config.Recovery.RecoveryDeadline; deadline != nil {
+		ctx, cancel = context.WithTimeout(ctx, *deadline)
+		logger.Info("Attempting to recover leader lease...", "lock", desc, "recoveryDeadline", *deadline)
+	} else {
+		ctx, cancel = context.WithCancel(ctx)
+		logger.Info("Attempting to recover leader lease...", "lock", desc)
+	}
+	defer cancel()
+	recovered := false
+	wait.UntilWithContext(ctx, func(ctx context.Context) {
+		renewed, lost := le.tryRecover(ctx)
+		le.maybeReportTransition()
+		if renewed {
+			recovered = true
+			cancel()
+			return
+		}
+		if lost {
+			logger.Info("Giving up on recovering leader lease", "lock", desc)
+			cancel()
+			return
+		}
+		logger.V(4).Info("Failed to recover lease", "lock", desc)
+	}, le.config.RetryPeriod)
+	if !recovered && ctx.Err() != nil {
+		logger.Info("Stopped attempting to recover leader lease", "lock", desc, "err", ctx.Err())
+	}
+	return recovered
+}
+
+// tryRecover attempts to renew the lease if, and only if, this elector is still
+// its holder, using the read-then-conditional-update path. It never creates or
+// re-acquires the lease. It returns renewed=true if the lease was renewed, and
+// lost=true if the lease was observed to have changed hands or been deleted, in
+// which case recovery must stop.
+func (le *LeaderElector) tryRecover(ctx context.Context) (renewed, lost bool) {
+	logger := klog.FromContext(ctx)
+	le.recordAttempt()
+	now := metav1.NewTime(le.clock.Now())
+
+	// 1. obtain the ElectionRecord. Unlike tryAcquireOrRenew, never create it.
+	oldLeaderElectionRecord, oldLeaderElectionRawRecord, err := le.config.Lock.Get(ctx)
+	if err != nil {
+		if !errors.IsNotFound(err) {
+			logger.Error(err, "Error retrieving lease lock", "lock", le.config.Lock.Describe())
+			return false, false
+		}
+		logger.Info("Lease lock was deleted while recovering", "lock", le.config.Lock.Describe())
+		return false, true
+	}
+
+	// 2. Record obtained, check the Identity
+	if !bytes.Equal(le.observedRawRecord, oldLeaderElectionRawRecord) {
+		le.setObservedRecord(oldLeaderElectionRecord)
+
+		le.observedRawRecord = oldLeaderElectionRawRecord
+	}
+	// Recovery only ever renews a lease this elector still holds. If it changed
+	// hands while we could not observe it, give up even if the other holder has
+	// since released it or expired.
+	if !le.IsLeader() {
+		logger.Info("Lease lock changed holder while recovering", "lock", le.config.Lock.Describe(), "holder", oldLeaderElectionRecord.HolderIdentity)
+		return false, true
+	}
+
+	// 3. We are still the holder, renew. The update is conditional on the
+	// resource version observed above.
+	leaderElectionRecord := rl.LeaderElectionRecord{
+		HolderIdentity:       le.config.Lock.Identity(),
+		LeaseDurationSeconds: int(le.config.LeaseDuration / time.Second),
+		RenewTime:            now,
+		AcquireTime:          oldLeaderElectionRecord.AcquireTime,
+		LeaderTransitions:    oldLeaderElectionRecord.LeaderTransitions,
+	}
+	if err = le.config.Lock.Update(ctx, leaderElectionRecord); err != nil {
+		logger.Error(err, "Failed to update lease", "lock", le.config.Lock.Describe())
+		return false, false
+	}
+
+	le.setObservedRecord(&leaderElectionRecord)
+	return true, false
 }
 
 // release attempts to release the leader lease if we have acquired it.
@@ -443,6 +641,7 @@ func (le *LeaderElector) tryCoordinatedRenew(ctx context.Context) bool {
 // on success else returns false.
 func (le *LeaderElector) tryAcquireOrRenew(ctx context.Context) bool {
 	logger := klog.FromContext(ctx)
+	le.recordAttempt()
 	now := metav1.NewTime(le.clock.Now())
 	leaderElectionRecord := rl.LeaderElectionRecord{
 		HolderIdentity:       le.config.Lock.Identity(),
@@ -535,14 +734,34 @@ func (le *LeaderElector) Check(maxTolerableExpiredLease time.Duration) error {
 	// died but conditions like deadlock can prevent this. (See #70819)
 	le.observedRecordLock.RLock()
 	lastObservation := le.observedTime
+	lastAttempt := le.lastAttemptTime
 	leaseDuration := le.config.LeaseDuration
 	le.observedRecordLock.RUnlock()
+
+	if le.config.Recovery != nil {
+		// In recovery mode the elector deliberately stays alive while it cannot
+		// observe the lease, so only report failure once the election loop has
+		// stopped making attempts.
+		if le.clock.Since(lastAttempt) > leaseDuration+maxTolerableExpiredLease {
+			return fmt.Errorf("stopped attempting to renew leadership on lease %s", le.config.Name)
+		}
+		return nil
+	}
 
 	if le.clock.Since(lastObservation) > leaseDuration+maxTolerableExpiredLease {
 		return fmt.Errorf("failed election to renew leadership on lease %s", le.config.Name)
 	}
 
 	return nil
+}
+
+// recordAttempt notes that the elector is about to attempt to acquire or renew
+// the lease. Protect critical sections with lock.
+func (le *LeaderElector) recordAttempt() {
+	le.observedRecordLock.Lock()
+	defer le.observedRecordLock.Unlock()
+
+	le.lastAttemptTime = le.clock.Now()
 }
 
 func (le *LeaderElector) isLeaseValid(now time.Time) bool {
