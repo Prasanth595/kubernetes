@@ -30,7 +30,6 @@ import (
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
 	v1 "k8s.io/api/core/v1"
-	schedulingv1alpha3 "k8s.io/api/scheduling/v1alpha3"
 	schedulingv1beta1 "k8s.io/api/scheduling/v1beta1"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -202,7 +201,7 @@ func newPGInfo(pg *schedulingv1beta1.PodGroup, pods ...*v1.Pod) *framework.PodGr
 }
 
 // newCPGInfo builds a CompositePodGroup PodGroupInfo node with the given children.
-func newCPGInfo(cpg *schedulingv1alpha3.CompositePodGroup, children ...*framework.PodGroupInfo) *framework.PodGroupInfo {
+func newCPGInfo(cpg *schedulingv1beta1.CompositePodGroup, children ...*framework.PodGroupInfo) *framework.PodGroupInfo {
 	return framework.NewPodGroupInfo(fwk.NewGenericCompositePodGroup(cpg.DeepCopy()), children...)
 }
 
@@ -245,7 +244,7 @@ func TestReconcilePodGroupWithSnapshot(t *testing.T) {
 		name                       string
 		queued                     *framework.PodGroupInfo
 		snapshotPodGroups          []*schedulingv1beta1.PodGroup
-		snapshotCompositePodGroups []*schedulingv1alpha3.CompositePodGroup
+		snapshotCompositePodGroups []*schedulingv1beta1.CompositePodGroup
 		enableCompositePodGroup    bool
 		want                       *framework.PodGroupInfo
 		wantErr                    string
@@ -298,7 +297,7 @@ func TestReconcilePodGroupWithSnapshot(t *testing.T) {
 				newCPGInfo(childCompositePodGroup,
 					newPGInfo(childPodGroup1, childPodGroup1Pods...),
 					newPGInfo(childPodGroup2, childPodGroup2Pods...))),
-			snapshotCompositePodGroups: []*schedulingv1alpha3.CompositePodGroup{compositePodGroupUpdated, childCompositePodGroupUpdated},
+			snapshotCompositePodGroups: []*schedulingv1beta1.CompositePodGroup{compositePodGroupUpdated, childCompositePodGroupUpdated},
 			snapshotPodGroups:          []*schedulingv1beta1.PodGroup{childPodGroup1Updated, childPodGroup2Updated},
 			enableCompositePodGroup:    true,
 			want: newCPGInfo(compositePodGroupUpdated,
@@ -319,7 +318,7 @@ func TestReconcilePodGroupWithSnapshot(t *testing.T) {
 				newCPGInfo(childCompositePodGroup,
 					newPGInfo(childPodGroup1, childPodGroup1Pods...),
 					newPGInfo(childPodGroup2, childPodGroup2Pods...))),
-			snapshotCompositePodGroups: []*schedulingv1alpha3.CompositePodGroup{compositePodGroupUpdated, otherChildCompositePodGroup},
+			snapshotCompositePodGroups: []*schedulingv1beta1.CompositePodGroup{compositePodGroupUpdated, otherChildCompositePodGroup},
 			snapshotPodGroups:          []*schedulingv1beta1.PodGroup{childPodGroup1Updated, childPodGroup2Updated},
 			enableCompositePodGroup:    true,
 			wantErr:                    `composite pod group object not found for pod group "compositepodgroup//cpg-nested"`,
@@ -330,7 +329,7 @@ func TestReconcilePodGroupWithSnapshot(t *testing.T) {
 				newCPGInfo(childCompositePodGroup,
 					newPGInfo(childPodGroup1, childPodGroup1Pods...),
 					newPGInfo(childPodGroup2, childPodGroup2Pods...))),
-			snapshotCompositePodGroups: []*schedulingv1alpha3.CompositePodGroup{compositePodGroupWithParent, childCompositePodGroup},
+			snapshotCompositePodGroups: []*schedulingv1beta1.CompositePodGroup{compositePodGroupWithParent, childCompositePodGroup},
 			snapshotPodGroups:          []*schedulingv1beta1.PodGroup{childPodGroup1, childPodGroup2},
 			enableCompositePodGroup:    true,
 			wantErr:                    "different parent in composite pod group between snapshot (cpg-missing) and queued entity ([unset])",
@@ -340,7 +339,7 @@ func TestReconcilePodGroupWithSnapshot(t *testing.T) {
 			queued: newCPGInfo(compositePodGroup,
 				newCPGInfo(childCompositePodGroup,
 					newPGInfo(childPodGroup1, childPodGroup1Pods...))),
-			snapshotCompositePodGroups: []*schedulingv1alpha3.CompositePodGroup{compositePodGroupUpdated, childCompositePodGroupUpdated},
+			snapshotCompositePodGroups: []*schedulingv1beta1.CompositePodGroup{compositePodGroupUpdated, childCompositePodGroupUpdated},
 			snapshotPodGroups:          []*schedulingv1beta1.PodGroup{childPodGroup1, childPodGroup2},
 			enableCompositePodGroup:    true,
 			wantErr:                    "different number of children in composite pod group between snapshot (2) and queued entity (1)",
@@ -351,7 +350,7 @@ func TestReconcilePodGroupWithSnapshot(t *testing.T) {
 				newCPGInfo(childCompositePodGroup,
 					newPGInfo(childPodGroup1, childPodGroup1Pods...),
 					newPGInfo(childPodGroup2, childPodGroup2Pods...))),
-			snapshotCompositePodGroups: []*schedulingv1alpha3.CompositePodGroup{compositePodGroupUpdated, childCompositePodGroupUpdated},
+			snapshotCompositePodGroups: []*schedulingv1beta1.CompositePodGroup{compositePodGroupUpdated, childCompositePodGroupUpdated},
 			snapshotPodGroups:          []*schedulingv1beta1.PodGroup{childPodGroup1},
 			enableCompositePodGroup:    true,
 			wantErr:                    "different number of children in composite pod group between snapshot (1) and queued entity (2)",
@@ -360,7 +359,7 @@ func TestReconcilePodGroupWithSnapshot(t *testing.T) {
 			name: "composite podgroup parent mismatch within hierarchy - a child changed its parent in the snapshot",
 			queued: newCPGInfo(compositePodGroup,
 				newCPGInfo(childCompositePodGroup)),
-			snapshotCompositePodGroups: []*schedulingv1alpha3.CompositePodGroup{compositePodGroupUpdated, childCompositePodGroupWithOtherParent, otherChildCompositePodGroup},
+			snapshotCompositePodGroups: []*schedulingv1beta1.CompositePodGroup{compositePodGroupUpdated, childCompositePodGroupWithOtherParent, otherChildCompositePodGroup},
 			enableCompositePodGroup:    true,
 			wantErr:                    "different parent in composite pod group between snapshot (cpg-other) and queued entity (cpg-root)",
 		},
@@ -368,7 +367,7 @@ func TestReconcilePodGroupWithSnapshot(t *testing.T) {
 			name: "composite podgroup parent mismatch within hierarchy - a child lost its parent in the snapshot",
 			queued: newCPGInfo(compositePodGroup,
 				newCPGInfo(childCompositePodGroup)),
-			snapshotCompositePodGroups: []*schedulingv1alpha3.CompositePodGroup{compositePodGroupUpdated, childCompositePodGroupWithoutParent, otherChildCompositePodGroup},
+			snapshotCompositePodGroups: []*schedulingv1beta1.CompositePodGroup{compositePodGroupUpdated, childCompositePodGroupWithoutParent, otherChildCompositePodGroup},
 			enableCompositePodGroup:    true,
 			wantErr:                    "different parent in composite pod group between snapshot ([unset]) and queued entity (cpg-root)",
 		},
@@ -378,7 +377,7 @@ func TestReconcilePodGroupWithSnapshot(t *testing.T) {
 				newCPGInfo(childCompositePodGroup,
 					newPGInfo(childPodGroup1, childPodGroup1Pods...),
 					newPGInfo(childPodGroup2, childPodGroup2Pods...))),
-			snapshotCompositePodGroups: []*schedulingv1alpha3.CompositePodGroup{compositePodGroupUpdated, childCompositePodGroupUpdated},
+			snapshotCompositePodGroups: []*schedulingv1beta1.CompositePodGroup{compositePodGroupUpdated, childCompositePodGroupUpdated},
 			snapshotPodGroups:          []*schedulingv1beta1.PodGroup{childPodGroup1Updated, childPodGroup2WithOtherParent, childPodGroup3},
 			enableCompositePodGroup:    true,
 			wantErr:                    "different parent in pod group between snapshot (cpg-other) and queued entity (cpg-nested)",
@@ -389,7 +388,7 @@ func TestReconcilePodGroupWithSnapshot(t *testing.T) {
 				newCPGInfo(childCompositePodGroup,
 					newPGInfo(childPodGroup1, childPodGroup1Pods...),
 					newPGInfo(childPodGroup2, childPodGroup2Pods...))),
-			snapshotCompositePodGroups: []*schedulingv1alpha3.CompositePodGroup{compositePodGroupUpdated, childCompositePodGroupUpdated},
+			snapshotCompositePodGroups: []*schedulingv1beta1.CompositePodGroup{compositePodGroupUpdated, childCompositePodGroupUpdated},
 			snapshotPodGroups:          []*schedulingv1beta1.PodGroup{childPodGroup1Updated, childPodGroup2WithoutParent, childPodGroup3},
 			enableCompositePodGroup:    true,
 			wantErr:                    "different parent in pod group between snapshot ([unset]) and queued entity (cpg-nested)",
@@ -400,7 +399,7 @@ func TestReconcilePodGroupWithSnapshot(t *testing.T) {
 				newCPGInfo(childCompositePodGroup,
 					newPGInfo(childPodGroup1, childPodGroup1Pods...),
 					newPGInfo(childPodGroup2, childPodGroup2Pods...))),
-			snapshotCompositePodGroups: []*schedulingv1alpha3.CompositePodGroup{compositePodGroupUpdated, childCompositePodGroupUpdated},
+			snapshotCompositePodGroups: []*schedulingv1beta1.CompositePodGroup{compositePodGroupUpdated, childCompositePodGroupUpdated},
 			snapshotPodGroups:          []*schedulingv1beta1.PodGroup{childPodGroup1Updated, childPodGroup3},
 			enableCompositePodGroup:    true,
 			wantErr:                    "pod group state not found for pod group podgroup//pg2",
@@ -445,8 +444,8 @@ func TestValidatePodGroup(t *testing.T) {
 		name                           string
 		podGroup                       *schedulingv1beta1.PodGroup
 		podGroups                      []*schedulingv1beta1.PodGroup
-		compositePodGroup              *schedulingv1alpha3.CompositePodGroup
-		compositePodGroups             []*schedulingv1alpha3.CompositePodGroup
+		compositePodGroup              *schedulingv1beta1.CompositePodGroup
+		compositePodGroups             []*schedulingv1beta1.CompositePodGroup
 		scheduledPods                  []*v1.Pod
 		pods                           []*v1.Pod
 		profiles                       profile.Map
@@ -621,9 +620,9 @@ func TestValidatePodGroup(t *testing.T) {
 		},
 		{
 			name:              "CPG success when all leaf groups and pods have PreemptNever with PodGroupPreemptionPolicy enabled",
-			compositePodGroup: st.MakeCompositePodGroup().Name("cpg-root").Priority(10).PreemptionPolicy(schedulingv1alpha3.PreemptNever).Obj(),
-			compositePodGroups: []*schedulingv1alpha3.CompositePodGroup{
-				st.MakeCompositePodGroup().Name("cpg-root").Priority(10).PreemptionPolicy(schedulingv1alpha3.PreemptNever).Obj(),
+			compositePodGroup: st.MakeCompositePodGroup().Name("cpg-root").Priority(10).PreemptionPolicy(schedulingv1beta1.PreemptNever).Obj(),
+			compositePodGroups: []*schedulingv1beta1.CompositePodGroup{
+				st.MakeCompositePodGroup().Name("cpg-root").Priority(10).PreemptionPolicy(schedulingv1beta1.PreemptNever).Obj(),
 			},
 			podGroups: []*schedulingv1beta1.PodGroup{
 				st.MakePodGroup().Name("pg1").ParentCompositePodGroup("cpg-root").Priority(10).PreemptionPolicy(schedulingv1beta1.PreemptNever).Obj(),
@@ -640,7 +639,7 @@ func TestValidatePodGroup(t *testing.T) {
 		{
 			name:              "CPG success when all leaf groups and pods have PreemptNever with PodGroupPreemptionPolicy disabled",
 			compositePodGroup: st.MakeCompositePodGroup().Name("cpg-root").Priority(10).Obj(),
-			compositePodGroups: []*schedulingv1alpha3.CompositePodGroup{
+			compositePodGroups: []*schedulingv1beta1.CompositePodGroup{
 				st.MakeCompositePodGroup().Name("cpg-root").Priority(10).Obj(),
 			},
 			podGroups: []*schedulingv1beta1.PodGroup{
@@ -657,9 +656,9 @@ func TestValidatePodGroup(t *testing.T) {
 		},
 		{
 			name:              "CPG success when all leaf groups and pods have PreemptLowerPriority with PodGroupPreemptionPolicy enabled",
-			compositePodGroup: st.MakeCompositePodGroup().Name("cpg-root").Priority(10).PreemptionPolicy(schedulingv1alpha3.PreemptLowerPriority).Obj(),
-			compositePodGroups: []*schedulingv1alpha3.CompositePodGroup{
-				st.MakeCompositePodGroup().Name("cpg-root").Priority(10).PreemptionPolicy(schedulingv1alpha3.PreemptLowerPriority).Obj(),
+			compositePodGroup: st.MakeCompositePodGroup().Name("cpg-root").Priority(10).PreemptionPolicy(schedulingv1beta1.PreemptLowerPriority).Obj(),
+			compositePodGroups: []*schedulingv1beta1.CompositePodGroup{
+				st.MakeCompositePodGroup().Name("cpg-root").Priority(10).PreemptionPolicy(schedulingv1beta1.PreemptLowerPriority).Obj(),
 			},
 			podGroups: []*schedulingv1beta1.PodGroup{
 				st.MakePodGroup().Name("pg1").ParentCompositePodGroup("cpg-root").Priority(10).PreemptionPolicy(schedulingv1beta1.PreemptLowerPriority).Obj(),
@@ -675,9 +674,9 @@ func TestValidatePodGroup(t *testing.T) {
 		},
 		{
 			name:              "CPG failure when root CPG has PreemptLowerPriority but leaf group has PreemptNever with PodGroupPreemptionPolicy enabled",
-			compositePodGroup: st.MakeCompositePodGroup().Name("cpg-root").Priority(10).PreemptionPolicy(schedulingv1alpha3.PreemptLowerPriority).Obj(),
-			compositePodGroups: []*schedulingv1alpha3.CompositePodGroup{
-				st.MakeCompositePodGroup().Name("cpg-root").Priority(10).PreemptionPolicy(schedulingv1alpha3.PreemptLowerPriority).Obj(),
+			compositePodGroup: st.MakeCompositePodGroup().Name("cpg-root").Priority(10).PreemptionPolicy(schedulingv1beta1.PreemptLowerPriority).Obj(),
+			compositePodGroups: []*schedulingv1beta1.CompositePodGroup{
+				st.MakeCompositePodGroup().Name("cpg-root").Priority(10).PreemptionPolicy(schedulingv1beta1.PreemptLowerPriority).Obj(),
 			},
 			podGroups: []*schedulingv1beta1.PodGroup{
 				st.MakePodGroup().Name("pg1").ParentCompositePodGroup("cpg-root").Priority(10).PreemptionPolicy(schedulingv1beta1.PreemptNever).Obj(),
@@ -693,9 +692,9 @@ func TestValidatePodGroup(t *testing.T) {
 		},
 		{
 			name:              "CPG failure when root CPG has PreemptNever but leaf group has PreemptLowerPriority with PodGroupPreemptionPolicy enabled",
-			compositePodGroup: st.MakeCompositePodGroup().Name("cpg-root").Priority(10).PreemptionPolicy(schedulingv1alpha3.PreemptNever).Obj(),
-			compositePodGroups: []*schedulingv1alpha3.CompositePodGroup{
-				st.MakeCompositePodGroup().Name("cpg-root").Priority(10).PreemptionPolicy(schedulingv1alpha3.PreemptNever).Obj(),
+			compositePodGroup: st.MakeCompositePodGroup().Name("cpg-root").Priority(10).PreemptionPolicy(schedulingv1beta1.PreemptNever).Obj(),
+			compositePodGroups: []*schedulingv1beta1.CompositePodGroup{
+				st.MakeCompositePodGroup().Name("cpg-root").Priority(10).PreemptionPolicy(schedulingv1beta1.PreemptNever).Obj(),
 			},
 			podGroups: []*schedulingv1beta1.PodGroup{
 				st.MakePodGroup().Name("pg1").ParentCompositePodGroup("cpg-root").Priority(10).PreemptionPolicy(schedulingv1beta1.PreemptLowerPriority).Obj(),
@@ -711,9 +710,9 @@ func TestValidatePodGroup(t *testing.T) {
 		},
 		{
 			name:              "CPG failure when different preemption policies are used across pods in the CPG with PodGroupPreemptionPolicy enabled",
-			compositePodGroup: st.MakeCompositePodGroup().Name("cpg-root").Priority(10).PreemptionPolicy(schedulingv1alpha3.PreemptNever).Obj(),
-			compositePodGroups: []*schedulingv1alpha3.CompositePodGroup{
-				st.MakeCompositePodGroup().Name("cpg-root").Priority(10).PreemptionPolicy(schedulingv1alpha3.PreemptNever).Obj(),
+			compositePodGroup: st.MakeCompositePodGroup().Name("cpg-root").Priority(10).PreemptionPolicy(schedulingv1beta1.PreemptNever).Obj(),
+			compositePodGroups: []*schedulingv1beta1.CompositePodGroup{
+				st.MakeCompositePodGroup().Name("cpg-root").Priority(10).PreemptionPolicy(schedulingv1beta1.PreemptNever).Obj(),
 			},
 			podGroups: []*schedulingv1beta1.PodGroup{
 				st.MakePodGroup().Name("pg1").ParentCompositePodGroup("cpg-root").Priority(10).PreemptionPolicy(schedulingv1beta1.PreemptNever).Obj(),
@@ -729,9 +728,9 @@ func TestValidatePodGroup(t *testing.T) {
 		},
 		{
 			name:              "CPG failure when different preemption policies are used across leaf groups in the CPG with PodGroupPreemptionPolicy enabled",
-			compositePodGroup: st.MakeCompositePodGroup().Name("cpg-root").Priority(10).PreemptionPolicy(schedulingv1alpha3.PreemptNever).Obj(),
-			compositePodGroups: []*schedulingv1alpha3.CompositePodGroup{
-				st.MakeCompositePodGroup().Name("cpg-root").Priority(10).PreemptionPolicy(schedulingv1alpha3.PreemptNever).Obj(),
+			compositePodGroup: st.MakeCompositePodGroup().Name("cpg-root").Priority(10).PreemptionPolicy(schedulingv1beta1.PreemptNever).Obj(),
+			compositePodGroups: []*schedulingv1beta1.CompositePodGroup{
+				st.MakeCompositePodGroup().Name("cpg-root").Priority(10).PreemptionPolicy(schedulingv1beta1.PreemptNever).Obj(),
 			},
 			podGroups: []*schedulingv1beta1.PodGroup{
 				st.MakePodGroup().Name("pg1").ParentCompositePodGroup("cpg-root").Priority(10).PreemptionPolicy(schedulingv1beta1.PreemptNever).Obj(),
@@ -747,10 +746,10 @@ func TestValidatePodGroup(t *testing.T) {
 		},
 		{
 			name:              "CPG success in multi-level hierarchy when all levels have PreemptNever with PodGroupPreemptionPolicy enabled",
-			compositePodGroup: st.MakeCompositePodGroup().Name("cpg-root").Priority(10).PreemptionPolicy(schedulingv1alpha3.PreemptNever).Obj(),
-			compositePodGroups: []*schedulingv1alpha3.CompositePodGroup{
-				st.MakeCompositePodGroup().Name("cpg-root").Priority(10).PreemptionPolicy(schedulingv1alpha3.PreemptNever).Obj(),
-				st.MakeCompositePodGroup().Name("cpg-nested").ParentCompositePodGroup("cpg-root").Priority(10).PreemptionPolicy(schedulingv1alpha3.PreemptNever).Obj(),
+			compositePodGroup: st.MakeCompositePodGroup().Name("cpg-root").Priority(10).PreemptionPolicy(schedulingv1beta1.PreemptNever).Obj(),
+			compositePodGroups: []*schedulingv1beta1.CompositePodGroup{
+				st.MakeCompositePodGroup().Name("cpg-root").Priority(10).PreemptionPolicy(schedulingv1beta1.PreemptNever).Obj(),
+				st.MakeCompositePodGroup().Name("cpg-nested").ParentCompositePodGroup("cpg-root").Priority(10).PreemptionPolicy(schedulingv1beta1.PreemptNever).Obj(),
 			},
 			podGroups: []*schedulingv1beta1.PodGroup{
 				st.MakePodGroup().Name("pg1").ParentCompositePodGroup("cpg-nested").Priority(10).PreemptionPolicy(schedulingv1beta1.PreemptNever).Obj(),
@@ -764,10 +763,10 @@ func TestValidatePodGroup(t *testing.T) {
 		},
 		{
 			name:              "CPG failure in multi-level hierarchy when nested CPG has PreemptLowerPriority mismatch with PodGroupPreemptionPolicy enabled",
-			compositePodGroup: st.MakeCompositePodGroup().Name("cpg-root").Priority(10).PreemptionPolicy(schedulingv1alpha3.PreemptNever).Obj(),
-			compositePodGroups: []*schedulingv1alpha3.CompositePodGroup{
-				st.MakeCompositePodGroup().Name("cpg-root").Priority(10).PreemptionPolicy(schedulingv1alpha3.PreemptNever).Obj(),
-				st.MakeCompositePodGroup().Name("cpg-nested").ParentCompositePodGroup("cpg-root").Priority(10).PreemptionPolicy(schedulingv1alpha3.PreemptLowerPriority).Obj(), // different
+			compositePodGroup: st.MakeCompositePodGroup().Name("cpg-root").Priority(10).PreemptionPolicy(schedulingv1beta1.PreemptNever).Obj(),
+			compositePodGroups: []*schedulingv1beta1.CompositePodGroup{
+				st.MakeCompositePodGroup().Name("cpg-root").Priority(10).PreemptionPolicy(schedulingv1beta1.PreemptNever).Obj(),
+				st.MakeCompositePodGroup().Name("cpg-nested").ParentCompositePodGroup("cpg-root").Priority(10).PreemptionPolicy(schedulingv1beta1.PreemptLowerPriority).Obj(), // different
 			},
 			podGroups: []*schedulingv1beta1.PodGroup{
 				st.MakePodGroup().Name("pg1").ParentCompositePodGroup("cpg-nested").Priority(10).PreemptionPolicy(schedulingv1beta1.PreemptNever).Obj(),
@@ -781,10 +780,10 @@ func TestValidatePodGroup(t *testing.T) {
 		},
 		{
 			name:              "CPG success in multi-level hierarchy when nested CPG has PreemptLowerPriority mismatch with PodGroupPreemptionPolicy disabled",
-			compositePodGroup: st.MakeCompositePodGroup().Name("cpg-root").Priority(10).PreemptionPolicy(schedulingv1alpha3.PreemptNever).Obj(),
-			compositePodGroups: []*schedulingv1alpha3.CompositePodGroup{
-				st.MakeCompositePodGroup().Name("cpg-root").Priority(10).PreemptionPolicy(schedulingv1alpha3.PreemptNever).Obj(),
-				st.MakeCompositePodGroup().Name("cpg-nested").ParentCompositePodGroup("cpg-root").Priority(10).PreemptionPolicy(schedulingv1alpha3.PreemptLowerPriority).Obj(),
+			compositePodGroup: st.MakeCompositePodGroup().Name("cpg-root").Priority(10).PreemptionPolicy(schedulingv1beta1.PreemptNever).Obj(),
+			compositePodGroups: []*schedulingv1beta1.CompositePodGroup{
+				st.MakeCompositePodGroup().Name("cpg-root").Priority(10).PreemptionPolicy(schedulingv1beta1.PreemptNever).Obj(),
+				st.MakeCompositePodGroup().Name("cpg-nested").ParentCompositePodGroup("cpg-root").Priority(10).PreemptionPolicy(schedulingv1beta1.PreemptLowerPriority).Obj(),
 			},
 			podGroups: []*schedulingv1beta1.PodGroup{
 				st.MakePodGroup().Name("pg1").ParentCompositePodGroup("cpg-nested").Priority(10).PreemptionPolicy(schedulingv1beta1.PreemptNever).Obj(),
@@ -799,7 +798,7 @@ func TestValidatePodGroup(t *testing.T) {
 		{
 			name:              "CPG failure when leaf group has different priority than root CPG even if pods match root priority",
 			compositePodGroup: st.MakeCompositePodGroup().Name("cpg-root").Priority(10).Obj(),
-			compositePodGroups: []*schedulingv1alpha3.CompositePodGroup{
+			compositePodGroups: []*schedulingv1beta1.CompositePodGroup{
 				st.MakeCompositePodGroup().Name("cpg-root").Priority(10).Obj(),
 			},
 			podGroups: []*schedulingv1beta1.PodGroup{
@@ -815,9 +814,9 @@ func TestValidatePodGroup(t *testing.T) {
 		},
 		{
 			name:              "CPG failure when leaf group has different preemption policy than root CPG even if pods match root preemption policy",
-			compositePodGroup: st.MakeCompositePodGroup().Name("cpg-root").Priority(10).PreemptionPolicy(schedulingv1alpha3.PreemptNever).Obj(),
-			compositePodGroups: []*schedulingv1alpha3.CompositePodGroup{
-				st.MakeCompositePodGroup().Name("cpg-root").Priority(10).PreemptionPolicy(schedulingv1alpha3.PreemptNever).Obj(),
+			compositePodGroup: st.MakeCompositePodGroup().Name("cpg-root").Priority(10).PreemptionPolicy(schedulingv1beta1.PreemptNever).Obj(),
+			compositePodGroups: []*schedulingv1beta1.CompositePodGroup{
+				st.MakeCompositePodGroup().Name("cpg-root").Priority(10).PreemptionPolicy(schedulingv1beta1.PreemptNever).Obj(),
 			},
 			podGroups: []*schedulingv1beta1.PodGroup{
 				st.MakePodGroup().Name("pg1").ParentCompositePodGroup("cpg-root").Priority(10).PreemptionPolicy(schedulingv1beta1.PreemptNever).Obj(),
@@ -834,7 +833,7 @@ func TestValidatePodGroup(t *testing.T) {
 		{
 			name:              "CPG failure in multi-level hierarchy when nested CPG has priority mismatch",
 			compositePodGroup: st.MakeCompositePodGroup().Name("cpg-root").Priority(10).Obj(),
-			compositePodGroups: []*schedulingv1alpha3.CompositePodGroup{
+			compositePodGroups: []*schedulingv1beta1.CompositePodGroup{
 				st.MakeCompositePodGroup().Name("cpg-root").Priority(10).Obj(),
 				st.MakeCompositePodGroup().Name("cpg-nested").ParentCompositePodGroup("cpg-root").Priority(20).Obj(),
 			},
@@ -850,7 +849,7 @@ func TestValidatePodGroup(t *testing.T) {
 		{
 			name:              "CPG failure in multi-level hierarchy when leaf group under nested CPG has priority mismatch",
 			compositePodGroup: st.MakeCompositePodGroup().Name("cpg-root").Priority(10).Obj(),
-			compositePodGroups: []*schedulingv1alpha3.CompositePodGroup{
+			compositePodGroups: []*schedulingv1beta1.CompositePodGroup{
 				st.MakeCompositePodGroup().Name("cpg-root").Priority(10).Obj(),
 				st.MakeCompositePodGroup().Name("cpg-nested").ParentCompositePodGroup("cpg-root").Priority(10).Obj(),
 			},
@@ -865,10 +864,10 @@ func TestValidatePodGroup(t *testing.T) {
 		},
 		{
 			name:              "CPG failure in multi-level hierarchy when leaf group under nested CPG has preemption policy mismatch with PodGroupPreemptionPolicy enabled",
-			compositePodGroup: st.MakeCompositePodGroup().Name("cpg-root").Priority(10).PreemptionPolicy(schedulingv1alpha3.PreemptNever).Obj(),
-			compositePodGroups: []*schedulingv1alpha3.CompositePodGroup{
-				st.MakeCompositePodGroup().Name("cpg-root").Priority(10).PreemptionPolicy(schedulingv1alpha3.PreemptNever).Obj(),
-				st.MakeCompositePodGroup().Name("cpg-nested").ParentCompositePodGroup("cpg-root").Priority(10).PreemptionPolicy(schedulingv1alpha3.PreemptNever).Obj(),
+			compositePodGroup: st.MakeCompositePodGroup().Name("cpg-root").Priority(10).PreemptionPolicy(schedulingv1beta1.PreemptNever).Obj(),
+			compositePodGroups: []*schedulingv1beta1.CompositePodGroup{
+				st.MakeCompositePodGroup().Name("cpg-root").Priority(10).PreemptionPolicy(schedulingv1beta1.PreemptNever).Obj(),
+				st.MakeCompositePodGroup().Name("cpg-nested").ParentCompositePodGroup("cpg-root").Priority(10).PreemptionPolicy(schedulingv1beta1.PreemptNever).Obj(),
 			},
 			podGroups: []*schedulingv1beta1.PodGroup{
 				st.MakePodGroup().Name("pg1").ParentCompositePodGroup("cpg-nested").Priority(10).PreemptionPolicy(schedulingv1beta1.PreemptLowerPriority).Obj(),
@@ -883,7 +882,7 @@ func TestValidatePodGroup(t *testing.T) {
 		{
 			name:              "CPG success when tree depth is exactly WorkloadMaxTreeDepth (4 levels)",
 			compositePodGroup: st.MakeCompositePodGroup().Name("cpg-root").Priority(10).Obj(),
-			compositePodGroups: []*schedulingv1alpha3.CompositePodGroup{
+			compositePodGroups: []*schedulingv1beta1.CompositePodGroup{
 				st.MakeCompositePodGroup().Name("cpg-root").Priority(10).Obj(),
 				st.MakeCompositePodGroup().Name("cpg-1").ParentCompositePodGroup("cpg-root").Priority(10).Obj(),
 				st.MakeCompositePodGroup().Name("cpg-2").ParentCompositePodGroup("cpg-1").Priority(10).Obj(),
@@ -899,7 +898,7 @@ func TestValidatePodGroup(t *testing.T) {
 		{
 			name:              "CPG failure when tree depth exceeds WorkloadMaxTreeDepth (5 levels)",
 			compositePodGroup: st.MakeCompositePodGroup().Name("cpg-root").Priority(10).Obj(),
-			compositePodGroups: []*schedulingv1alpha3.CompositePodGroup{
+			compositePodGroups: []*schedulingv1beta1.CompositePodGroup{
 				st.MakeCompositePodGroup().Name("cpg-root").Priority(10).Obj(),
 				st.MakeCompositePodGroup().Name("cpg-1").ParentCompositePodGroup("cpg-root").Priority(10).Obj(),
 				st.MakeCompositePodGroup().Name("cpg-2").ParentCompositePodGroup("cpg-1").Priority(10).Obj(),
@@ -917,7 +916,7 @@ func TestValidatePodGroup(t *testing.T) {
 		{
 			name:              "CPG failure when child branch exceeds WorkloadMaxTreeDepth without pods in that branch",
 			compositePodGroup: st.MakeCompositePodGroup().Name("cpg-root").Priority(10).Obj(),
-			compositePodGroups: []*schedulingv1alpha3.CompositePodGroup{
+			compositePodGroups: []*schedulingv1beta1.CompositePodGroup{
 				st.MakeCompositePodGroup().Name("cpg-root").Priority(10).Obj(),
 				st.MakeCompositePodGroup().Name("cpg-1").ParentCompositePodGroup("cpg-root").Priority(10).Obj(),
 				st.MakeCompositePodGroup().Name("cpg-2").ParentCompositePodGroup("cpg-1").Priority(10).Obj(),
@@ -936,7 +935,7 @@ func TestValidatePodGroup(t *testing.T) {
 		{
 			name:              "CPG failure when child branch has a CompositePodGroup at depth 4 without level-5 children",
 			compositePodGroup: st.MakeCompositePodGroup().Name("cpg-root").Priority(10).Obj(),
-			compositePodGroups: []*schedulingv1alpha3.CompositePodGroup{
+			compositePodGroups: []*schedulingv1beta1.CompositePodGroup{
 				st.MakeCompositePodGroup().Name("cpg-root").Priority(10).Obj(),
 				st.MakeCompositePodGroup().Name("cpg-1").ParentCompositePodGroup("cpg-root").Priority(10).Obj(),
 				st.MakeCompositePodGroup().Name("cpg-2").ParentCompositePodGroup("cpg-1").Priority(10).Obj(),
@@ -954,7 +953,7 @@ func TestValidatePodGroup(t *testing.T) {
 		{
 			name:              "CPG failure when child group references a different workload than root group",
 			compositePodGroup: st.MakeCompositePodGroup().Name("cpg-root").WorkloadRef("wl-1", "root-t").Priority(10).Obj(),
-			compositePodGroups: []*schedulingv1alpha3.CompositePodGroup{
+			compositePodGroups: []*schedulingv1beta1.CompositePodGroup{
 				st.MakeCompositePodGroup().Name("cpg-root").WorkloadRef("wl-1", "root-t").Priority(10).Obj(),
 				st.MakeCompositePodGroup().Name("cpg-1").ParentCompositePodGroup("cpg-root").WorkloadRef("wl-2", "child-t").Priority(10).Obj(),
 			},
@@ -970,7 +969,7 @@ func TestValidatePodGroup(t *testing.T) {
 		{
 			name:              "CPG failure when leaf group references a different workload than root group",
 			compositePodGroup: st.MakeCompositePodGroup().Name("cpg-root").WorkloadRef("wl-1", "root-t").Priority(10).Obj(),
-			compositePodGroups: []*schedulingv1alpha3.CompositePodGroup{
+			compositePodGroups: []*schedulingv1beta1.CompositePodGroup{
 				st.MakeCompositePodGroup().Name("cpg-root").WorkloadRef("wl-1", "root-t").Priority(10).Obj(),
 				st.MakeCompositePodGroup().Name("cpg-1").ParentCompositePodGroup("cpg-root").WorkloadRef("wl-1", "child-t").Priority(10).Obj(),
 			},
@@ -986,7 +985,7 @@ func TestValidatePodGroup(t *testing.T) {
 		{
 			name:              "CPG failure when gang parent group has a basic child PodGroup",
 			compositePodGroup: st.MakeCompositePodGroup().Name("cpg-root").MinGroupCount(1).Priority(10).Obj(),
-			compositePodGroups: []*schedulingv1alpha3.CompositePodGroup{
+			compositePodGroups: []*schedulingv1beta1.CompositePodGroup{
 				st.MakeCompositePodGroup().Name("cpg-root").MinGroupCount(1).Priority(10).Obj(),
 			},
 			podGroups: []*schedulingv1beta1.PodGroup{
@@ -1001,7 +1000,7 @@ func TestValidatePodGroup(t *testing.T) {
 		{
 			name:              "CPG failure when gang parent non-root group has a basic child CompositePodGroup",
 			compositePodGroup: st.MakeCompositePodGroup().Name("cpg-root").MinGroupCount(1).Priority(10).Obj(),
-			compositePodGroups: []*schedulingv1alpha3.CompositePodGroup{
+			compositePodGroups: []*schedulingv1beta1.CompositePodGroup{
 				st.MakeCompositePodGroup().Name("cpg-root").MinGroupCount(1).Priority(10).Obj(),
 				st.MakeCompositePodGroup().Name("cpg-child").ParentCompositePodGroup("cpg-root").MinGroupCount(1).Priority(10).Obj(),
 			},
@@ -1017,7 +1016,7 @@ func TestValidatePodGroup(t *testing.T) {
 		{
 			name:              "CPG success when basic parent group has a gang child CompositePodGroup",
 			compositePodGroup: st.MakeCompositePodGroup().Name("cpg-root").BasicPolicy().Priority(10).Obj(),
-			compositePodGroups: []*schedulingv1alpha3.CompositePodGroup{
+			compositePodGroups: []*schedulingv1beta1.CompositePodGroup{
 				st.MakeCompositePodGroup().Name("cpg-root").BasicPolicy().Priority(10).Obj(),
 				st.MakeCompositePodGroup().Name("cpg-child").ParentCompositePodGroup("cpg-root").MinGroupCount(1).Priority(10).Obj(),
 			},
@@ -1032,7 +1031,7 @@ func TestValidatePodGroup(t *testing.T) {
 		{
 			name:              "CPG failure when gang parent group has a basic child CompositePodGroup",
 			compositePodGroup: st.MakeCompositePodGroup().Name("cpg-root").MinGroupCount(1).Priority(10).Obj(),
-			compositePodGroups: []*schedulingv1alpha3.CompositePodGroup{
+			compositePodGroups: []*schedulingv1beta1.CompositePodGroup{
 				st.MakeCompositePodGroup().Name("cpg-root").MinGroupCount(1).Priority(10).Obj(),
 				st.MakeCompositePodGroup().Name("cpg-child").ParentCompositePodGroup("cpg-root").BasicPolicy().Priority(10).Obj(),
 			},
@@ -1048,7 +1047,7 @@ func TestValidatePodGroup(t *testing.T) {
 		{
 			name:              "CPG failure when parent group with All disruption mode has PG child group with Single disruption mode",
 			compositePodGroup: st.MakeCompositePodGroup().Name("cpg-root").BasicPolicy().DisruptionModeAll().Priority(10).Obj(),
-			compositePodGroups: []*schedulingv1alpha3.CompositePodGroup{
+			compositePodGroups: []*schedulingv1beta1.CompositePodGroup{
 				st.MakeCompositePodGroup().Name("cpg-root").BasicPolicy().DisruptionModeAll().Priority(10).Obj(),
 			},
 			podGroups: []*schedulingv1beta1.PodGroup{
@@ -1063,7 +1062,7 @@ func TestValidatePodGroup(t *testing.T) {
 		{
 			name:              "CPG failure when parent non-root group with All disruption mode has child group with Single disruption mode",
 			compositePodGroup: st.MakeCompositePodGroup().Name("cpg-root").BasicPolicy().DisruptionModeAll().Priority(10).Obj(),
-			compositePodGroups: []*schedulingv1alpha3.CompositePodGroup{
+			compositePodGroups: []*schedulingv1beta1.CompositePodGroup{
 				st.MakeCompositePodGroup().Name("cpg-root").BasicPolicy().DisruptionModeAll().Priority(10).Obj(),
 				st.MakeCompositePodGroup().Name("cpg-child").ParentCompositePodGroup("cpg-root").BasicPolicy().DisruptionModeAll().Priority(10).Obj(),
 			},
@@ -1079,7 +1078,7 @@ func TestValidatePodGroup(t *testing.T) {
 		{
 			name:              "CPG failure when parent group with All disruption mode has CPG child group with Single disruption mode",
 			compositePodGroup: st.MakeCompositePodGroup().Name("cpg-root").BasicPolicy().DisruptionModeAll().Priority(10).Obj(),
-			compositePodGroups: []*schedulingv1alpha3.CompositePodGroup{
+			compositePodGroups: []*schedulingv1beta1.CompositePodGroup{
 				st.MakeCompositePodGroup().Name("cpg-root").BasicPolicy().DisruptionModeAll().Priority(10).Obj(),
 				st.MakeCompositePodGroup().Name("cpg-child").ParentCompositePodGroup("cpg-root").BasicPolicy().DisruptionModeSingle().Priority(10).Obj(),
 			},
@@ -1095,7 +1094,7 @@ func TestValidatePodGroup(t *testing.T) {
 		{
 			name:              "CPG success when parent group with All disruption mode has child group with All disruption mode",
 			compositePodGroup: st.MakeCompositePodGroup().Name("cpg-root").BasicPolicy().DisruptionModeAll().Priority(10).Obj(),
-			compositePodGroups: []*schedulingv1alpha3.CompositePodGroup{
+			compositePodGroups: []*schedulingv1beta1.CompositePodGroup{
 				st.MakeCompositePodGroup().Name("cpg-root").BasicPolicy().DisruptionModeAll().Priority(10).Obj(),
 			},
 			podGroups: []*schedulingv1beta1.PodGroup{
@@ -7048,7 +7047,7 @@ func TestBuildPodGroupSchedulingFunc(t *testing.T) {
 			midCPG1 := st.MakeCompositePodGroup().Name("midcpg1").Namespace(ns).MinGroupCount(1).ParentCompositePodGroup("cpg-root").Obj()
 			midCPG2 := st.MakeCompositePodGroup().Name("midcpg2").Namespace(ns).MinGroupCount(2).ParentCompositePodGroup("cpg-root").Obj()
 			midCPG3 := st.MakeCompositePodGroup().Name("midcpg3").Namespace(ns).MinGroupCount(1).ParentCompositePodGroup("cpg-root").Obj()
-			allCPGs := []*schedulingv1alpha3.CompositePodGroup{rootCPG, midCPG1, midCPG2, midCPG3}
+			allCPGs := []*schedulingv1beta1.CompositePodGroup{rootCPG, midCPG1, midCPG2, midCPG3}
 			for _, cpg := range allCPGs {
 				cache.AddGenericPodGroup(fwk.NewGenericCompositePodGroup(cpg))
 			}
@@ -7159,12 +7158,12 @@ func TestBuildPodGroupSchedulingFunc(t *testing.T) {
 }
 
 func buildHierarchicalQueuedPodGroupInfo(
-	rootCPG *schedulingv1alpha3.CompositePodGroup,
-	cpgs []*schedulingv1alpha3.CompositePodGroup,
+	rootCPG *schedulingv1beta1.CompositePodGroup,
+	cpgs []*schedulingv1beta1.CompositePodGroup,
 	pgs []*schedulingv1beta1.PodGroup,
 	pods []*v1.Pod,
 ) *framework.QueuedPodGroupInfo {
-	cpgChildren := make(map[string][]*schedulingv1alpha3.CompositePodGroup)
+	cpgChildren := make(map[string][]*schedulingv1beta1.CompositePodGroup)
 	for _, cpg := range cpgs {
 		if cpg.Spec.ParentCompositePodGroupName != nil {
 			parent := *cpg.Spec.ParentCompositePodGroupName
@@ -7179,10 +7178,10 @@ func buildHierarchicalQueuedPodGroupInfo(
 		}
 	}
 
-	var buildTree func(cpg *schedulingv1alpha3.CompositePodGroup) *framework.PodGroupInfo
-	buildTree = func(cpg *schedulingv1alpha3.CompositePodGroup) *framework.PodGroupInfo {
+	var buildTree func(cpg *schedulingv1beta1.CompositePodGroup) *framework.PodGroupInfo
+	buildTree = func(cpg *schedulingv1beta1.CompositePodGroup) *framework.PodGroupInfo {
 		if cpg.Spec.WorkloadRef == nil {
-			cpg.Spec.WorkloadRef = &schedulingv1alpha3.WorkloadReference{}
+			cpg.Spec.WorkloadRef = &schedulingv1beta1.WorkloadReference{}
 		}
 		var children []*framework.PodGroupInfo
 		for _, childCPG := range cpgChildren[cpg.Name] {
@@ -7320,7 +7319,7 @@ func TestPodGroupCycle_PodStatusConditions(t *testing.T) {
 		name                         string
 		tasEnabled                   []bool
 		cpgEnabled                   []bool
-		compositePodGroups           []*schedulingv1alpha3.CompositePodGroup
+		compositePodGroups           []*schedulingv1beta1.CompositePodGroup
 		podGroups                    []*schedulingv1beta1.PodGroup
 		pods                         []*v1.Pod
 		podGroupInfo                 *framework.QueuedPodGroupInfo
@@ -7889,7 +7888,7 @@ func TestPodGroupCycle_PodStatusConditions(t *testing.T) {
 			name:               "CPG: All pods feasible",
 			tasEnabled:         []bool{true},
 			cpgEnabled:         []bool{true},
-			compositePodGroups: []*schedulingv1alpha3.CompositePodGroup{cpg},
+			compositePodGroups: []*schedulingv1beta1.CompositePodGroup{cpg},
 			podGroups:          []*schedulingv1beta1.PodGroup{pg2, pg3},
 			pods:               []*v1.Pod{p4, p5},
 			podGroupInfo:       compositePodGroupInfo,
@@ -7910,7 +7909,7 @@ func TestPodGroupCycle_PodStatusConditions(t *testing.T) {
 			name:               "CPG: No pods schedulable",
 			tasEnabled:         []bool{true},
 			cpgEnabled:         []bool{true},
-			compositePodGroups: []*schedulingv1alpha3.CompositePodGroup{cpg},
+			compositePodGroups: []*schedulingv1beta1.CompositePodGroup{cpg},
 			podGroups:          []*schedulingv1beta1.PodGroup{pg2, pg3},
 			pods:               []*v1.Pod{p4, p5},
 			podGroupInfo:       compositePodGroupInfo,
@@ -7948,7 +7947,7 @@ func TestPodGroupCycle_PodStatusConditions(t *testing.T) {
 			name:               "CPG: One pod unschedulable",
 			tasEnabled:         []bool{true},
 			cpgEnabled:         []bool{true},
-			compositePodGroups: []*schedulingv1alpha3.CompositePodGroup{cpg},
+			compositePodGroups: []*schedulingv1beta1.CompositePodGroup{cpg},
 			podGroups:          []*schedulingv1beta1.PodGroup{pg2, pg3},
 			pods:               []*v1.Pod{p4, p5},
 			podGroupInfo:       compositePodGroupInfo,
@@ -7986,7 +7985,7 @@ func TestPodGroupCycle_PodStatusConditions(t *testing.T) {
 			name:               "CPG: One pod unschedulable, causing loop to break earlier",
 			tasEnabled:         []bool{true},
 			cpgEnabled:         []bool{true},
-			compositePodGroups: []*schedulingv1alpha3.CompositePodGroup{cpg},
+			compositePodGroups: []*schedulingv1beta1.CompositePodGroup{cpg},
 			podGroups:          []*schedulingv1beta1.PodGroup{pg2, pg3},
 			pods:               []*v1.Pod{p4, p5},
 			podGroupInfo:       compositePodGroupInfo,
@@ -8024,7 +8023,7 @@ func TestPodGroupCycle_PodStatusConditions(t *testing.T) {
 			name:               "CPG: One pod unschedulable, but others feasible",
 			tasEnabled:         []bool{true},
 			cpgEnabled:         []bool{true},
-			compositePodGroups: []*schedulingv1alpha3.CompositePodGroup{cpg},
+			compositePodGroups: []*schedulingv1beta1.CompositePodGroup{cpg},
 			podGroups:          []*schedulingv1beta1.PodGroup{pg2, pg3},
 			pods:               []*v1.Pod{p4, p5},
 			podGroupInfo:       compositePodGroupInfo,
@@ -8056,7 +8055,7 @@ func TestPodGroupCycle_PodStatusConditions(t *testing.T) {
 			name:               "CPG: One pod returns error, with success pods",
 			tasEnabled:         []bool{true},
 			cpgEnabled:         []bool{true},
-			compositePodGroups: []*schedulingv1alpha3.CompositePodGroup{cpg},
+			compositePodGroups: []*schedulingv1beta1.CompositePodGroup{cpg},
 			podGroups:          []*schedulingv1beta1.PodGroup{pg2, pg3},
 			pods:               []*v1.Pod{p4, p5},
 			podGroupInfo:       compositePodGroupInfo,
@@ -8094,7 +8093,7 @@ func TestPodGroupCycle_PodStatusConditions(t *testing.T) {
 			name:               "CPG: One pod returns error, with unschedulable pods",
 			tasEnabled:         []bool{true},
 			cpgEnabled:         []bool{true},
-			compositePodGroups: []*schedulingv1alpha3.CompositePodGroup{cpg},
+			compositePodGroups: []*schedulingv1beta1.CompositePodGroup{cpg},
 			podGroups:          []*schedulingv1beta1.PodGroup{pg2, pg3},
 			pods:               []*v1.Pod{p4, p5},
 			podGroupInfo:       compositePodGroupInfo,
@@ -8132,7 +8131,7 @@ func TestPodGroupCycle_PodStatusConditions(t *testing.T) {
 			name:               "CPG: Pods feasible, but PlacementFeasible errors",
 			tasEnabled:         []bool{true},
 			cpgEnabled:         []bool{true},
-			compositePodGroups: []*schedulingv1alpha3.CompositePodGroup{cpg},
+			compositePodGroups: []*schedulingv1beta1.CompositePodGroup{cpg},
 			podGroups:          []*schedulingv1beta1.PodGroup{pg2, pg3},
 			pods:               []*v1.Pod{p4, p5},
 			podGroupInfo:       compositePodGroupInfo,
@@ -8170,7 +8169,7 @@ func TestPodGroupCycle_PodStatusConditions(t *testing.T) {
 			name:               "CPG: Unschedulable pods, but PlacementFeasible errors",
 			tasEnabled:         []bool{true},
 			cpgEnabled:         []bool{true},
-			compositePodGroups: []*schedulingv1alpha3.CompositePodGroup{cpg},
+			compositePodGroups: []*schedulingv1beta1.CompositePodGroup{cpg},
 			podGroups:          []*schedulingv1beta1.PodGroup{pg2, pg3},
 			pods:               []*v1.Pod{p4, p5},
 			podGroupInfo:       compositePodGroupInfo,
@@ -8208,7 +8207,7 @@ func TestPodGroupCycle_PodStatusConditions(t *testing.T) {
 			name:               "CPG: PlacementFeasible returns Unschedulable on first step, with placement context",
 			tasEnabled:         []bool{true},
 			cpgEnabled:         []bool{true},
-			compositePodGroups: []*schedulingv1alpha3.CompositePodGroup{cpg},
+			compositePodGroups: []*schedulingv1beta1.CompositePodGroup{cpg},
 			podGroups:          []*schedulingv1beta1.PodGroup{pg2, pg3},
 			pods:               []*v1.Pod{p4, p5},
 			podGroupInfo:       compositePodGroupInfo,
@@ -8378,7 +8377,7 @@ func TestUpdateCompositePodGroupCondition(t *testing.T) {
 
 	tests := []struct {
 		name                              string
-		existingPodGroup                  *schedulingv1alpha3.CompositePodGroup
+		existingPodGroup                  *schedulingv1beta1.CompositePodGroup
 		condition                         *metav1.Condition
 		expectCondition                   *metav1.Condition
 		expectLastTransitionTimeUnchanged bool
@@ -8669,7 +8668,7 @@ func TestUpdateCompositePodGroupCondition(t *testing.T) {
 			}
 			sched.updateCompositePodGroupCondition(ctx, podGroupInfo.PodGroupInfo, tt.condition)
 
-			updatedPodGroup, err := client.SchedulingV1alpha3().CompositePodGroups(tt.existingPodGroup.Namespace).Get(ctx, tt.existingPodGroup.Name, metav1.GetOptions{})
+			updatedPodGroup, err := client.SchedulingV1beta1().CompositePodGroups(tt.existingPodGroup.Namespace).Get(ctx, tt.existingPodGroup.Name, metav1.GetOptions{})
 			if err != nil {
 				t.Fatalf("Failed to get CompositePodGroup: %v", err)
 			}
@@ -8695,7 +8694,7 @@ func TestSubmitCompositePodGroupAlgorithmResult_StatusUpdates(t *testing.T) {
 
 	tests := []struct {
 		name                string
-		existingCPGs        []*schedulingv1alpha3.CompositePodGroup
+		existingCPGs        []*schedulingv1beta1.CompositePodGroup
 		existingPodGroups   []*schedulingv1beta1.PodGroup
 		algorithmResults    map[fwk.EntityKey]*podGroupAlgorithmResult
 		expectCPGConditions map[string]*metav1.Condition
@@ -8703,7 +8702,7 @@ func TestSubmitCompositePodGroupAlgorithmResult_StatusUpdates(t *testing.T) {
 	}{
 		{
 			name:              "Entire hierarchy scheduled successfully",
-			existingCPGs:      []*schedulingv1alpha3.CompositePodGroup{cpg1},
+			existingCPGs:      []*schedulingv1beta1.CompositePodGroup{cpg1},
 			existingPodGroups: []*schedulingv1beta1.PodGroup{pg1, pg2},
 			algorithmResults: map[fwk.EntityKey]*podGroupAlgorithmResult{
 				fwk.CompositePodGroupKey(cpg1.Namespace, cpg1.Name): {
@@ -8744,7 +8743,7 @@ func TestSubmitCompositePodGroupAlgorithmResult_StatusUpdates(t *testing.T) {
 		},
 		{
 			name:              "Entire hierarchy unschedulable on rejection",
-			existingCPGs:      []*schedulingv1alpha3.CompositePodGroup{cpg1},
+			existingCPGs:      []*schedulingv1beta1.CompositePodGroup{cpg1},
 			existingPodGroups: []*schedulingv1beta1.PodGroup{pg1, pg2},
 			algorithmResults: map[fwk.EntityKey]*podGroupAlgorithmResult{
 				fwk.CompositePodGroupKey(cpg1.Namespace, cpg1.Name): {
@@ -8785,7 +8784,7 @@ func TestSubmitCompositePodGroupAlgorithmResult_StatusUpdates(t *testing.T) {
 		},
 		{
 			name:              "Subtree unschedulable on rejection",
-			existingCPGs:      []*schedulingv1alpha3.CompositePodGroup{cpg1, cpgSub, cpgSub2},
+			existingCPGs:      []*schedulingv1beta1.CompositePodGroup{cpg1, cpgSub, cpgSub2},
 			existingPodGroups: []*schedulingv1beta1.PodGroup{pg1, pg2},
 			algorithmResults: map[fwk.EntityKey]*podGroupAlgorithmResult{
 				fwk.CompositePodGroupKey(cpg1.Namespace, cpg1.Name): {
@@ -8846,7 +8845,7 @@ func TestSubmitCompositePodGroupAlgorithmResult_StatusUpdates(t *testing.T) {
 		},
 		{
 			name:              "Hierarchy waiting on preemption",
-			existingCPGs:      []*schedulingv1alpha3.CompositePodGroup{cpg1},
+			existingCPGs:      []*schedulingv1beta1.CompositePodGroup{cpg1},
 			existingPodGroups: []*schedulingv1beta1.PodGroup{pg1, pg2},
 			algorithmResults: map[fwk.EntityKey]*podGroupAlgorithmResult{
 				fwk.CompositePodGroupKey(cpg1.Namespace, cpg1.Name): {
@@ -8890,7 +8889,7 @@ func TestSubmitCompositePodGroupAlgorithmResult_StatusUpdates(t *testing.T) {
 		},
 		{
 			name:              "Entire hierarchy scheduler error",
-			existingCPGs:      []*schedulingv1alpha3.CompositePodGroup{cpg1},
+			existingCPGs:      []*schedulingv1beta1.CompositePodGroup{cpg1},
 			existingPodGroups: []*schedulingv1beta1.PodGroup{pg1},
 			algorithmResults: map[fwk.EntityKey]*podGroupAlgorithmResult{
 				fwk.CompositePodGroupKey(cpg1.Namespace, cpg1.Name): {
@@ -8921,7 +8920,7 @@ func TestSubmitCompositePodGroupAlgorithmResult_StatusUpdates(t *testing.T) {
 		},
 		{
 			name:              "Entire hierarchy scheduler error with error object and reasons",
-			existingCPGs:      []*schedulingv1alpha3.CompositePodGroup{cpg1},
+			existingCPGs:      []*schedulingv1beta1.CompositePodGroup{cpg1},
 			existingPodGroups: []*schedulingv1beta1.PodGroup{pg1},
 			algorithmResults: map[fwk.EntityKey]*podGroupAlgorithmResult{
 				fwk.CompositePodGroupKey(cpg1.Namespace, cpg1.Name): {
@@ -9012,7 +9011,7 @@ func TestSubmitCompositePodGroupAlgorithmResult_StatusUpdates(t *testing.T) {
 			sched.submitPodGroupAlgorithmResult(ctx, schedFwk, framework.NewCycleState(), rootPodGroupInfo, tt.algorithmResults, time.Now(), tt.algorithmResults[fwk.CompositePodGroupKey(cpg1.Namespace, cpg1.Name)].status)
 
 			for name, expectCond := range tt.expectCPGConditions {
-				updatedCPG, err := client.SchedulingV1alpha3().CompositePodGroups("default").Get(ctx, name, metav1.GetOptions{})
+				updatedCPG, err := client.SchedulingV1beta1().CompositePodGroups("default").Get(ctx, name, metav1.GetOptions{})
 				if err != nil {
 					t.Fatalf("Failed to get CompositePodGroup %s: %v", name, err)
 				}
@@ -9406,7 +9405,7 @@ func TestPodGroupSchedulingPlacementAlgorithm_PlacementLimit(t *testing.T) {
 
 // runPlacementAlgorithm runs the placement algorithm for podGroup, or for a CompositePodGroup with
 // podGroup as its only child when compositePodGroup is true, and reverts the assumed result.
-func runPlacementAlgorithm(ctx context.Context, t *testing.T, sched *Scheduler, schedFwk framework.Framework, podGroup *schedulingv1beta1.PodGroup, cpg *schedulingv1alpha3.CompositePodGroup, compositePodGroup bool, pod *v1.Pod) *podGroupAlgorithmResult {
+func runPlacementAlgorithm(ctx context.Context, t *testing.T, sched *Scheduler, schedFwk framework.Framework, podGroup *schedulingv1beta1.PodGroup, cpg *schedulingv1beta1.CompositePodGroup, compositePodGroup bool, pod *v1.Pod) *podGroupAlgorithmResult {
 	t.Helper()
 	podGroupInfo := &framework.PodGroupInfo{GenericPodGroup: fwk.NewGenericPodGroup(podGroup)}
 	podInfo := &framework.QueuedPodInfo{PodInfo: &framework.PodInfo{Pod: pod}}
