@@ -2756,7 +2756,8 @@ func addCommands[T supportedTypes](rootCmd *cobra.Command, commands []fakeCmds[T
 
 func TestDefaultGetPreferences(t *testing.T) {
 	tests := map[string]struct {
-		defaultKubercFile string
+		defaultKubercFile    string
+		useDefaultPathAsFlag bool
 
 		// kubercEnv and kubercEnvFile are mutually exclusive, the latter will
 		// overrite the former always
@@ -2806,6 +2807,27 @@ unknownField: value`,
 		"explicit flag with non-existent file returns error": {
 			kubercFlag:    "/non/existent/file",
 			expectedError: "no such file or directory",
+		},
+		"explicit flag with default path overrides KUBERC": {
+			defaultKubercFile: `apiVersion: kubectl.config.k8s.io/v1beta1
+kind: Preference
+defaults:
+  - command: delete
+    options:
+      - name: interactive
+        default: "true"`,
+			kubercEnvFile:        `invalid: yaml: content: [unclosed bracket`,
+			useDefaultPathAsFlag: true,
+			expectedPreferences: &config.Preference{
+				Defaults: []config.CommandDefaults{
+					{
+						Command: "delete",
+						Options: []config.CommandOptionDefault{
+							{Name: "interactive", Default: "true"},
+						},
+					},
+				},
+			},
 		},
 
 		// KUBERC env variants
@@ -2908,6 +2930,10 @@ unknownField: value`,
 				require.NoError(t, os.WriteFile(kubercEnv, []byte(tc.kubercEnvFile), 0644))
 			}
 			t.Setenv("KUBERC", kubercEnv)
+
+			if tc.useDefaultPathAsFlag {
+				kubercFlag = RecommendedKubeRCFile
+			}
 
 			var errOut bytes.Buffer
 			actual, err := DefaultGetPreferences(kubercFlag, &errOut)
