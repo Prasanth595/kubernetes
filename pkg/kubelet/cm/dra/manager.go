@@ -253,7 +253,7 @@ func (m *Manager) prepareResources(ctx context.Context, pod *v1.Pod) error {
 	logger := klog.FromContext(ctx).WithName("dra-manager")
 	logger = klog.LoggerWithValues(logger, "pod", klog.KObj(pod))
 	batches := make(map[*draplugin.DRAPlugin][]*drapb.Claim)
-	resourceClaims := make(map[types.UID]*resourceapi.ResourceClaim)
+	claimInfos := make(map[types.UID]*ClaimInfo)
 
 	// Do a validation pass *without* changing the claim info cache.
 	// If anything goes wrong, we don't proceed. This has the advantage
@@ -390,9 +390,9 @@ func (m *Manager) prepareResources(ctx context.Context, pod *v1.Pod) error {
 				continue
 			}
 
-			// This saved claim will be used to update ClaimInfo cache
-			// after NodePrepareResources GRPC succeeds
-			resourceClaims[claimInfo.ClaimUID] = resourceClaim
+			// Remember the cache entry that the NodePrepareResources
+			// result belongs to, see checkStillCached.
+			claimInfos[claimInfo.ClaimUID] = claimInfo
 
 			// Loop through all drivers and prepare for calling NodePrepareResources.
 			claim := &drapb.Claim{
@@ -437,7 +437,7 @@ func (m *Manager) prepareResources(ctx context.Context, pod *v1.Pod) error {
 				return fmt.Errorf("NodePrepareResources failed for ResourceClaim %s: %s", reqClaim.Name, result.Error)
 			}
 
-			claim := resourceClaims[types.UID(claimUID)]
+			claimInfo := claimInfos[types.UID(claimUID)]
 
 			// Add the prepared CDI devices to the claim info. The
 			// driver's response is authoritative for this (claim, driver)
@@ -447,13 +447,12 @@ func (m *Manager) prepareResources(ctx context.Context, pod *v1.Pod) error {
 			// another driver in the batch failed, setPrepared was
 			// skipped) would end up with the devices duplicated.
 			err := m.cache.withLock(logger, func() error {
-				info, exists := m.cache.get(claim.Name, claim.Namespace)
-				if !exists {
-					return fmt.Errorf("internal error: unable to get claim info for ResourceClaim %s in namespace %s", claim.Name, claim.Namespace)
+				if err := m.checkStillCached(claimInfo); err != nil {
+					return err
 				}
-				info.resetDevices(plugin.DriverName())
+				claimInfo.resetDevices(plugin.DriverName())
 				for _, device := range result.GetDevices() {
-					info.addDevice(plugin.DriverName(), state.Device{PoolName: device.PoolName,
+					claimInfo.addDevice(plugin.DriverName(), state.Device{PoolName: device.PoolName,
 						DeviceName: device.DeviceName, ShareID: (*types.UID)(device.ShareId),
 						RequestNames: device.RequestNames, CDIDeviceIDs: device.CdiDeviceIds})
 				}
@@ -474,12 +473,11 @@ func (m *Manager) prepareResources(ctx context.Context, pod *v1.Pod) error {
 	// Atomically perform some operations on the claimInfo cache.
 	err = m.cache.withLock(logger, func() error {
 		// Mark all pod claims as prepared.
-		for _, claim := range resourceClaims {
-			info, exists := m.cache.get(claim.Name, claim.Namespace)
-			if !exists {
-				return fmt.Errorf("internal error: unable to get claim info for ResourceClaim %s in namespace %s", claim.Name, claim.Namespace)
+		for _, claimInfo := range claimInfos {
+			if err := m.checkStillCached(claimInfo); err != nil {
+				return err
 			}
-			info.setPrepared()
+			claimInfo.setPrepared()
 		}
 
 		// Checkpoint to ensure all prepared claims are tracked with their list
@@ -495,6 +493,23 @@ func (m *Manager) prepareResources(ctx context.Context, pod *v1.Pod) error {
 		return err
 	}
 
+	return nil
+}
+
+// checkStillCached verifies that info is still the cache entry for its claim.
+// The cache lock is not held during NodePrepareResources, so the claim may have
+// been unprepared and prepared again in the meantime, possibly with a different
+// allocation. Entries are only added when none exists for the name and only
+// removed by unprepare, so a different entry means the claim was replaced, even
+// if it has the same UID. The caller must hold the cache lock.
+func (m *Manager) checkStillCached(info *ClaimInfo) error {
+	cached, exists := m.cache.get(info.ClaimName, info.Namespace)
+	if !exists {
+		return fmt.Errorf("internal error: unable to get claim info for ResourceClaim %s in namespace %s", info.ClaimName, info.Namespace)
+	}
+	if cached != info {
+		return fmt.Errorf("ResourceClaim %s was unprepared and prepared again while being prepared", klog.KRef(info.Namespace, info.ClaimName))
+	}
 	return nil
 }
 
