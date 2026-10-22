@@ -20,7 +20,6 @@ import (
 	"strings"
 	"testing"
 
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	genericapirequest "k8s.io/apiserver/pkg/endpoints/request"
 	apitesting "k8s.io/kubernetes/pkg/api/testing"
@@ -88,7 +87,15 @@ func TestDeclarativeValidateStatusUpdate(t *testing.T) {
 			Verb:              "update",
 		})
 
+		conditionsPath := field.NewPath("status", "storageHealth").Index(0).Child("healthConditions")
 		conditionReasonPath := field.NewPath("status", "storageHealth").Index(0).Child("healthConditions").Index(0).Child("reason")
+		conditionMessagePath := field.NewPath("status", "storageHealth").Index(0).Child("healthConditions").Index(0).Child("message")
+		conditionStatusTypePath := field.NewPath("status", "storageHealth").Index(0).Child("healthConditions").Index(0).Child("status")
+
+		validStorageHealthStatusTypes := []storage.StorageHealthStatusType{
+			storage.StorageDegraded,
+			storage.StorageUnreachable,
+		}
 		tests := map[string]struct {
 			storageHealth []storage.StorageHealth
 			expectedErrs  field.ErrorList
@@ -135,6 +142,19 @@ func TestDeclarativeValidateStatusUpdate(t *testing.T) {
 					field.TooLong(conditionReasonPath, "", 256).WithOrigin("maxBytes").MarkAlpha(),
 				},
 			},
+			"message length can not be greater than 1024": {
+				storageHealth: []storage.StorageHealth{{
+					Name: "foo",
+					HealthConditions: []storage.StorageHealthCondition{{
+						Status:  storage.StorageUnreachable,
+						Reason:  "BackendDown",
+						Message: strings.Repeat("a", 1025),
+					}},
+				}},
+				expectedErrs: field.ErrorList{
+					field.TooLong(conditionMessagePath, "", 1024).WithOrigin("maxBytes").MarkAlpha(),
+				},
+			},
 			"reason format is invalid": {
 				storageHealth: []storage.StorageHealth{{
 					Name: "foo",
@@ -145,6 +165,38 @@ func TestDeclarativeValidateStatusUpdate(t *testing.T) {
 				}},
 				expectedErrs: field.ErrorList{
 					field.Invalid(conditionReasonPath, "", "").WithOrigin("format=k8s-condition-reason").MarkAlpha(),
+				},
+			},
+			"storage health status type is required": {
+				storageHealth: []storage.StorageHealth{{
+					Name: "foo",
+					HealthConditions: []storage.StorageHealthCondition{{
+						Reason: "BackendDown",
+					}},
+				}},
+				expectedErrs: field.ErrorList{
+					field.Required(conditionStatusTypePath, "").MarkAlpha(),
+				},
+			},
+			"invalid storage health status type": {
+				storageHealth: []storage.StorageHealth{{
+					Name: "foo",
+					HealthConditions: []storage.StorageHealthCondition{{
+						Status: "badvalue",
+						Reason: "BackendDown",
+					}},
+				}},
+				expectedErrs: field.ErrorList{
+					field.NotSupported(conditionStatusTypePath, "", validStorageHealthStatusTypes).MarkAlpha(),
+				},
+			},
+			"16 health conditions is allowed": {
+				storageHealth: mkStorageHealthWithConditions(16),
+			},
+			"more than 16 health conditions": {
+				storageHealth: mkStorageHealthWithConditions(17),
+				expectedErrs: field.ErrorList{
+					field.TooMany(conditionsPath, 17, 16).WithOrigin("maxItems").MarkAlpha(),
 				},
 			},
 		}
@@ -162,11 +214,22 @@ func TestDeclarativeValidateStatusUpdate(t *testing.T) {
 		}
 	}
 }
+
+// mkStorageHealthWithConditions returns one StorageHealth entry carrying n valid conditions.
+func mkStorageHealthWithConditions(n int) []storage.StorageHealth {
+	conditions := make([]storage.StorageHealthCondition, n)
+	for i := range conditions {
+		conditions[i] = storage.StorageHealthCondition{
+			Status: storage.StorageUnreachable,
+			Reason: "BackendDown",
+		}
+	}
+	return []storage.StorageHealth{{Name: "foo", HealthConditions: conditions}}
+}
+
 func mkCSINode(tweaks ...func(node *storage.CSINode)) storage.CSINode {
 	node := storage.CSINode{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: "valid-obj",
-		},
+		Name: "valid-obj",
 		Spec: storage.CSINodeSpec{
 			Drivers: []storage.CSINodeDriver{
 				{
