@@ -1386,7 +1386,7 @@ type CapacityRequirements struct {
 	// The consumed capacity, which may be adjusted based on the requestPolicy if defined,
 	// is recorded in the resource claim's status.devices[*].consumedCapacity field.
 	//
-	// Requests may have at most 32 entries.
+	// Requests may have at most 32 entries. The values must not be negative.
 	//
 	// +optional
 	Requests map[QualifiedName]resource.Quantity
@@ -1996,6 +1996,8 @@ type DeviceRequestAllocationResult struct {
 	// All capacity entries are included, even if the consumed amount is zero.
 	// The domain prefix in the capacity name may be omitted if it is
 	// the same as the driver name.
+	//
+	// ConsumedCapacity may have at most 32 entries. The values must not be negative.
 	//
 	// +optional
 	// +featureGate=DRAConsumableCapacity

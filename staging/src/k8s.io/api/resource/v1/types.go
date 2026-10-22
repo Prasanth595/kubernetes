@@ -1454,6 +1454,7 @@ type ExactDeviceRequest struct {
 	//
 	// +optional
 	// +featureGate=DRAConsumableCapacity
+	// +k8s:optional
 	Capacity *CapacityRequirements `json:"capacity,omitempty" protobuf:"bytes,7,opt,name=capacity"`
 
 	// derivedAttributes defines a set of virtual attributes computed via CEL expressions
@@ -1599,6 +1600,7 @@ type DeviceSubRequest struct {
 	//
 	// +optional
 	// +featureGate=DRAConsumableCapacity
+	// +k8s:optional
 	Capacity *CapacityRequirements `json:"capacity,omitempty" protobuf:"bytes,7,opt,name=capacity"`
 
 	// derivedAttributes defines a set of virtual attributes computed via CEL expressions
@@ -1666,9 +1668,12 @@ type CapacityRequirements struct {
 	// The consumed capacity, which may be adjusted based on the requestPolicy if defined,
 	// is recorded in the resource claim's status.devices[*].consumedCapacity field.
 	//
-	// Requests may have at most 32 entries.
+	// Requests may have at most 32 entries. The values must not be negative.
 	//
 	// +optional
+	// +k8s:optional
+	// +k8s:maxProperties=32
+	// +k8s:eachVal=+k8s:minimum=0
 	Requests map[QualifiedName]resource.Quantity `json:"requests,omitempty" protobuf:"bytes,1,rep,name=requests,castkey=QualifiedName"`
 }
 
@@ -2341,8 +2346,13 @@ type DeviceRequestAllocationResult struct {
 	// The domain prefix in the capacity name may be omitted if it is
 	// the same as the driver name.
 	//
+	// ConsumedCapacity may have at most 32 entries. The values must not be negative.
+	//
 	// +optional
 	// +featureGate=DRAConsumableCapacity
+	// +k8s:optional
+	// +k8s:maxProperties=32
+	// +k8s:eachVal=+k8s:minimum=0
 	ConsumedCapacity map[QualifiedName]resource.Quantity `json:"consumedCapacity,omitempty" protobuf:"bytes,10,rep,name=consumedCapacity"`
 
 	// skipNodeOperations lists node-local resource operations (gRPC calls)

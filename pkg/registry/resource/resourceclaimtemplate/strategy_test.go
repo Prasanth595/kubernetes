@@ -776,7 +776,7 @@ func TestStrategyUpdate(t *testing.T) {
 				features.DRAPrioritizedList: false,
 			},
 			emulatedVersion:        "1.36",
-			expectValidationErrors: []string{deviceRequestError, fieldImmutableError, deviceRequestError},
+			expectValidationErrors: []string{deviceRequestError, fieldImmutableError},
 			verify: func(t *testing.T, as []testclient.Action) {
 				if len(as) != 0 {
 					t.Errorf("expected no action to be taken")

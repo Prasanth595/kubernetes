@@ -1275,20 +1275,6 @@ func TestValidateClaim(t *testing.T) {
 				return claim
 			}(),
 		},
-		"capacity-requests-too-many": {
-			wantFailures: field.ErrorList{
-				field.TooMany(field.NewPath("spec", "devices", "requests").Index(0).Child("exactly", "capacity", "requests"), 33, resource.MaxCapacityRequirements),
-			},
-			claim: func() *resource.ResourceClaim {
-				claim := testClaim(goodName, goodNS, validClaimSpec)
-				requests := make(map[resource.QualifiedName]apiresource.Quantity)
-				for i := 0; i < resource.MaxCapacityRequirements+1; i++ {
-					requests[resource.QualifiedName(fmt.Sprintf("dra.example.com/cap%d", i))] = apiresource.MustParse("1")
-				}
-				claim.Spec.Devices.Requests[0].Exactly.Capacity = &resource.CapacityRequirements{Requests: requests}
-				return claim
-			}(),
-		},
 		"capacity-requests-bad-key": {
 			wantFailures: field.ErrorList{
 				field.Invalid(field.NewPath("spec", "devices", "requests").Index(0).Child("exactly", "capacity", "requests"), "1bad", "a valid C identifier must start with alphabetic character or '_', followed by a string of alphanumeric characters or '_' (e.g. 'my_name',  or 'MY_NAME',  or 'MyName', regex used for validation is '[A-Za-z_][A-Za-z0-9_]*')"),
@@ -1303,15 +1289,15 @@ func TestValidateClaim(t *testing.T) {
 				return claim
 			}(),
 		},
-		"capacity-requests-negative-value": {
+		"capacity-requests-bad-key-in-subrequest": {
 			wantFailures: field.ErrorList{
-				field.Invalid(field.NewPath("spec", "devices", "requests").Index(0).Child("exactly", "capacity", "requests").Key("dra.example.com/cores"), "-1", "must not be negative"),
+				field.Invalid(field.NewPath("spec", "devices", "requests").Index(0).Child("firstAvailable").Index(0).Child("capacity", "requests"), "1bad", "a valid C identifier must start with alphabetic character or '_', followed by a string of alphanumeric characters or '_' (e.g. 'my_name',  or 'MY_NAME',  or 'MyName', regex used for validation is '[A-Za-z_][A-Za-z0-9_]*')"),
 			},
 			claim: func() *resource.ResourceClaim {
-				claim := testClaim(goodName, goodNS, validClaimSpec)
-				claim.Spec.Devices.Requests[0].Exactly.Capacity = &resource.CapacityRequirements{
+				claim := testClaim(goodName, goodNS, validClaimSpecWithFirstAvailable)
+				claim.Spec.Devices.Requests[0].FirstAvailable[0].Capacity = &resource.CapacityRequirements{
 					Requests: map[resource.QualifiedName]apiresource.Quantity{
-						"dra.example.com/cores": apiresource.MustParse("-1"),
+						"1bad": apiresource.MustParse("1"),
 					},
 				}
 				return claim
@@ -1377,26 +1363,6 @@ func TestValidateClaimUpdate(t *testing.T) {
 					},
 				}}
 				return claim
-			}(),
-			update: func(claim *resource.ResourceClaim) *resource.ResourceClaim {
-				// No changes -> remains valid.
-				return claim
-			},
-		},
-		"negative-capacity-valid-if-stored": {
-			// Unlike the ResourceClaimTemplate case, this doesn't exercise the
-			// DeepEqual ratchet in validateCapacityRequirements: ValidateResourceClaimUpdate
-			// never re-validates spec content at all (spec is immutable, only checked
-			// via ValidateImmutableField), so a no-op update never reaches capacity
-			// validation in the first place.
-			oldClaim: func() *resource.ResourceClaim {
-				spec := validClaimSpec.DeepCopy()
-				spec.Devices.Requests[0].Exactly.Capacity = &resource.CapacityRequirements{
-					Requests: map[resource.QualifiedName]apiresource.Quantity{
-						"dra.example.com/cores": apiresource.MustParse("-1"),
-					},
-				}
-				return testClaim(goodName, goodNS, *spec)
 			}(),
 			update: func(claim *resource.ResourceClaim) *resource.ResourceClaim {
 				// No changes -> remains valid.
@@ -2666,6 +2632,33 @@ func TestValidateClaimStatusUpdate(t *testing.T) {
 								AdminAccess: ptr.To(false),
 								ConsumedCapacity: map[resource.QualifiedName]apiresource.Quantity{
 									goodName: apiresource.MustParse("1"),
+								},
+							},
+						},
+					},
+				}
+				return claim
+			},
+			consumableCapacityFeatureGate: true,
+		},
+		"invalid-add-consumed-capacity-bad-key": {
+			wantFailures: field.ErrorList{
+				field.Invalid(field.NewPath("status", "allocation", "devices", "results").Index(0).Child("consumedCapacity"), "1bad", "a valid C identifier must start with alphabetic character or '_', followed by a string of alphanumeric characters or '_' (e.g. 'my_name',  or 'MY_NAME',  or 'MyName', regex used for validation is '[A-Za-z_][A-Za-z0-9_]*')"),
+			},
+			oldClaim: testClaim(goodName, goodNS, validClaimSpec),
+			update: func(claim *resource.ResourceClaim) *resource.ResourceClaim {
+				claim.Status.Allocation = &resource.AllocationResult{
+					Devices: resource.DeviceAllocationResult{
+						Results: []resource.DeviceRequestAllocationResult{
+							{
+								Request:     goodName,
+								Driver:      goodName,
+								Pool:        goodName,
+								Device:      goodName,
+								ShareID:     ptr.To(goodShareID),
+								AdminAccess: ptr.To(false),
+								ConsumedCapacity: map[resource.QualifiedName]apiresource.Quantity{
+									"1bad": apiresource.MustParse("1"),
 								},
 							},
 						},
