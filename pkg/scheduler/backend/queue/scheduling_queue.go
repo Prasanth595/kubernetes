@@ -558,7 +558,16 @@ func (p *PriorityQueue) isEntityWorthRequeuing(logger klog.Logger, entity framew
 	// But we should prioritize higher strategies.
 	bestStrategy := queueSkip
 	hasPending := entity.HasPodsWithPendingPlugins()
+	// For a gated entity, PreEnqueue stops at the first gated pod and subsequent members
+	// added to the group are not evaluated by PreEnqueue, leaving them without rejector plugins.
+	// Skip such pods so they don't trigger a requeue via the "no failed plugins" fallback,
+	// while still evaluating pods that have rejector plugins from a prior scheduling cycle
+	// (e.g. when DefaultPreemption gates the group and relies on in-cycle UnschedulablePlugins).
+	skipPodsWithoutRejectors := entity.Gated() && hasGatedPod(entity)
 	for pInfo := range entity.ForEachPodInfo() {
+		if skipPodsWithoutRejectors && len(pInfo.UnschedulablePlugins) == 0 && len(pInfo.PendingPlugins) == 0 {
+			continue
+		}
 		strategy := p.isPodWorthRequeuing(logger, pInfo, event, oldObj, newObj, hintKeys)
 		if strategy > bestStrategy {
 			bestStrategy = strategy
@@ -572,6 +581,18 @@ func (p *PriorityQueue) isEntityWorthRequeuing(logger klog.Logger, entity framew
 		}
 	}
 	return bestStrategy
+}
+
+// hasGatedPod returns true if any pod of the entity is gated.
+// An entity can be gated while none of its pods is, e.g. when the gated pod
+// was deleted from the pod group, as that doesn't re-run PreEnqueue.
+func hasGatedPod(entity framework.QueuedEntityInfo) bool {
+	for pInfo := range entity.ForEachPodInfo() {
+		if pInfo.Gated() {
+			return true
+		}
+	}
+	return false
 }
 
 // isPodWorthRequeuing calls QueueingHintFn of only plugins registered in pInfo.unschedulablePlugins and pInfo.PendingPlugins.
